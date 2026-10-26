@@ -22,8 +22,8 @@ Configuration: `cp config.example.yaml config.yaml`, `cp .env.example .env`.
 | `status` | what Liquidsoap is playing |
 | `push PATH`, `skip` | by hand, for testing |
 
-Until neighbeats has `/v1/pick` (N1), set `director.seed_paths` in `config.yaml`: paths, as
-Jellyfin sees them, the station may route toward.
+Destinations come from neighbeats' `/v1/pick` (API 2, N1). `director.seed_paths` is an optional
+fallback for a neighbeats without it: paths, as Jellyfin sees them, the station may route toward.
 
 ## Listening
 

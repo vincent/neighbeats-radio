@@ -110,3 +110,27 @@ func TestSocketDown(t *testing.T) {
 		t.Fatal("want dial error")
 	}
 }
+
+func TestPickSearchAndOldServer(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/pick":
+			io.WriteString(w, `{"tracks":[{"item_id":null,"path":"/m/a.mp3","artist":"A","title":"T","duration":10}],"notes":["n"]}`)
+		case "/v1/search":
+			io.WriteString(w, `{"tracks":[{"item_id":"x","path":"/m/a.mp3","artist":"A","title":"T"},{"item_id":null,"path":"/m/b.mp3","artist":"B","title":"U"}],"ambiguous":true}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	p, err := c.Pick(context.Background(), PickRequest{Count: 1})
+	if err != nil || len(p.Tracks) != 1 || p.Tracks[0].Duration != 10 {
+		t.Fatalf("%+v %v", p, err)
+	}
+	s, err := c.Search(context.Background(), "a b", 5)
+	if err != nil || !s.Ambiguous || len(s.Tracks) != 2 {
+		t.Fatalf("%+v %v", s, err)
+	}
+	if _, err := c.Similar(context.Background(), SimilarRequest{}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("404 maps to ErrNotFound: %v", err)
+	}
+}

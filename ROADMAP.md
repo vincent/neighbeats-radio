@@ -16,7 +16,7 @@ neighbeats source is in `/home/vincent/Workspace/Perso/neighbeats`.
 |---|-----------|--------|--------|
 | R0 | Audio spine: Liquidsoap, one mount behind Traefik, push a file by hand | in progress | [R0](docs/roadmap/R0-audio-spine.md) |
 | R1 | Endless director: routes from neighbeats keep the queue full | in progress | [R1](docs/roadmap/R1-director.md) |
-| N1 | neighbeats API additions the director needs | todo (in neighbeats) | [N1](docs/roadmap/N1-neighbeats-api.md) |
+| N1 | neighbeats API additions the director needs | built, untested on real data (in neighbeats) | [N1](docs/roadmap/N1-neighbeats-api.md) |
 | R2 | Transitions: crossfade, loudness, silence trimming | todo | [R2](docs/roadmap/R2-transitions.md) |
 | R3 | Control CLI: now, next, skip, steer, history | todo | [R3](docs/roadmap/R3-control.md) |
 | R4 | Spoken announcements (Piper TTS, templates, ducking) | todo | [R4](docs/roadmap/R4-announcements.md) |

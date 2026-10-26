@@ -17,9 +17,9 @@ director:
   look_ahead: 20m        # keep this much planned
   repeat_window: 8h      # no recording twice inside this window
   poll_interval: 2s
-  assumed_track: 4m      # used until neighbeats reports durations (N1)
+  assumed_track: 4m      # used for tracks neighbeats reports no duration for
   push_when_below: 2     # items Liquidsoap holds
-  # Destinations until neighbeats has /v1/pick (N1). Paths as Jellyfin sees them.
+  # Optional fallback destinations when /v1/pick fails or is missing. Paths as Jellyfin sees them.
   seed_paths: []
 
 data: /data              # holds neighbeats-radio.sqlite

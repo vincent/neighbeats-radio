@@ -57,8 +57,12 @@ destination; when the route is nearly used up, pick a new destination and route 
 Built and unit tested (fake Liquidsoap and neighbeats), and smoke-tested as a binary against
 fake HTTP servers. Not yet run against real Liquidsoap or neighbeats.
 
-- Until N1: destinations come from `director.seed_paths` (required), no `exclude` is sent
-  (the planner filters repeats on the answer), durations default to `director.assumed_track`.
+- N1 (API 2) is used: destinations from `/v1/pick`, recent plays sent as `exclude` on
+  `/v1/path`, durations from the answers. Against an older neighbeats the director still
+  works: `director.seed_paths` is the fallback for picks, the router retries once without
+  `exclude` after a 400 and the planner filters repeats on the answer, and
+  `director.assumed_track` stands in for missing durations. The client-side filter stays on
+  as a safety net.
 - Assumption to verify on first real run: `queued` in `/control/status` counts requests
   waiting behind the track playing, not the playing one.
 - Restart: the director flushes Liquidsoap's queue once at start (it cannot know what is

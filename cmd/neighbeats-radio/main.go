@@ -110,14 +110,19 @@ func runDirector(ctx context.Context, cfg config.Config, lq *liq.Client) error {
 	defer db.Close()
 
 	d := cfg.Director
-	router := director.NeighbeatsRouter{
-		Client: neighbeats.New(cfg.Neighbeats.Socket, cfg.Neighbeats.Timeout),
+	nb := neighbeats.New(cfg.Neighbeats.Socket, cfg.Neighbeats.Timeout)
+	router := &director.NeighbeatsRouter{
+		Client: nb,
 		Mode:   d.Mode, User: cfg.Neighbeats.User, MaxMinutes: d.MaxMinutes,
+	}
+	picker := director.NeighbeatsPicker{
+		Client: nb, Mode: d.Mode, User: cfg.Neighbeats.User, MaxMinutes: d.MaxMinutes,
+		Fallback: director.SeedPicker{Paths: d.SeedPaths}, Log: log,
 	}
 	pl := plan.New(plan.Config{
 		LegMin: d.LegMin, LegMax: d.LegMax, LookAhead: d.LookAhead,
 		RepeatWindow: d.RepeatWindow, AssumedTrack: d.AssumedTrack,
-	}, router, director.SeedPicker{Paths: d.SeedPaths}, log, nil)
+	}, router, picker, log, nil)
 
 	dir := director.New(director.Config{
 		PollInterval: d.PollInterval, PushWhenBelow: d.PushWhenBelow, RepeatWindow: d.RepeatWindow,

@@ -22,7 +22,7 @@ type Ref struct {
 
 // Track is a track in an answer. ItemID is nil when neighbeats does not know the
 // Jellyfin item. Cosine and Reason describe the hop from the previous track.
-// Duration (seconds) is zero until neighbeats adds it (N1).
+// Duration is in seconds, zero when unknown or on a server older than API 2.
 type Track struct {
 	ItemID   *string `json:"item_id"`
 	Path     string  `json:"path"`
@@ -43,6 +43,7 @@ func (t Track) Ref() Ref {
 
 type Health struct {
 	Version      string `json:"version"`
+	API          int    `json:"api"` // 0 = before N1: no duration, exclude, pick or search
 	Tracks       int    `json:"tracks"`
 	LyricVectors int    `json:"lyric_vectors"`
 	LoadedAt     string `json:"loaded_at"`
@@ -57,6 +58,7 @@ type PathRequest struct {
 	Theme        string   `json:"theme,omitempty"`
 	AvoidArtists []string `json:"avoid_artists,omitempty"`
 	MaxMinutes   int      `json:"max_minutes,omitempty"`
+	Exclude      []Ref    `json:"exclude,omitempty"`
 }
 
 // PathResult is an answer to /v1/path. When Found is false, Tracks holds the
@@ -72,15 +74,38 @@ type PathResult struct {
 }
 
 type SimilarRequest struct {
-	Item         Ref `json:"item"`
-	Count        int `json:"count,omitempty"`
-	MaxPerArtist int `json:"max_per_artist,omitempty"`
-	MaxMinutes   int `json:"max_minutes,omitempty"`
+	Item         Ref   `json:"item"`
+	Count        int   `json:"count,omitempty"`
+	MaxPerArtist int   `json:"max_per_artist,omitempty"`
+	MaxMinutes   int   `json:"max_minutes,omitempty"`
+	Exclude      []Ref `json:"exclude,omitempty"`
 }
 
 type SimilarResult struct {
 	Tracks []Track  `json:"tracks"`
 	Notes  []string `json:"notes"`
+}
+
+// PickRequest asks for destinations (API 2). Pool is "taste" or "any".
+type PickRequest struct {
+	Pool       string `json:"pool,omitempty"`
+	Mode       string `json:"mode,omitempty"`
+	User       string `json:"user,omitempty"`
+	Exclude    []Ref  `json:"exclude,omitempty"`
+	Count      int    `json:"count,omitempty"`
+	MaxMinutes int    `json:"max_minutes,omitempty"`
+}
+
+type PickResult struct {
+	Tracks []Track  `json:"tracks"`
+	Notes  []string `json:"notes"`
+}
+
+// SearchResult is the answer to /v1/search (API 2). Ambiguous means several
+// candidates for the caller to choose from.
+type SearchResult struct {
+	Tracks    []Track `json:"tracks"`
+	Ambiguous bool    `json:"ambiguous"`
 }
 
 // ErrNotFound is returned for 404: track unknown or not analysed.
@@ -129,6 +154,24 @@ func (c *Client) Similar(ctx context.Context, req SimilarRequest) (SimilarResult
 	return r, err
 }
 
+// Pick draws destinations. An older server answers 404 (ErrNotFound).
+func (c *Client) Pick(ctx context.Context, req PickRequest) (PickResult, error) {
+	var r PickResult
+	_, err := c.do(ctx, http.MethodPost, "/v1/pick", req, &r)
+	return r, err
+}
+
+// Search resolves words, a recording MBID or a path to analysed tracks.
+// ErrNotFound means nothing matched (or the server predates API 2).
+func (c *Client) Search(ctx context.Context, query string, limit int) (SearchResult, error) {
+	var r SearchResult
+	_, err := c.do(ctx, http.MethodPost, "/v1/search", struct {
+		Query string `json:"query"`
+		Limit int    `json:"limit,omitempty"`
+	}{query, limit}, &r)
+	return r, err
+}
+
 // do returns the status code. 200 and 422 decode into out; anything else is an error.
 func (c *Client) do(ctx context.Context, method, path string, in, out any) (int, error) {
 	var body io.Reader
@@ -164,7 +207,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) (int,
 	case http.StatusNotFound:
 		return resp.StatusCode, fmt.Errorf("%w (%s)", ErrNotFound, apiError(raw))
 	}
-	return resp.StatusCode, fmt.Errorf("neighbeats %s: %d: %s", path, resp.StatusCode, apiError(raw))
+	return resp.StatusCode, &StatusError{Path: path, Status: resp.StatusCode, Msg: apiError(raw)}
 }
 
 func apiError(raw []byte) string {
@@ -175,4 +218,22 @@ func apiError(raw []byte) string {
 		return e.Error
 	}
 	return string(bytes.TrimSpace(raw))
+}
+
+// StatusError is a non-success answer other than 404 and 422.
+type StatusError struct {
+	Path   string
+	Status int
+	Msg    string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("neighbeats %s: %d: %s", e.Path, e.Status, e.Msg)
+}
+
+// IsBadRequest reports a 400: the server rejected the request, for example
+// an unknown field sent to a server older than API 2.
+func IsBadRequest(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Status == http.StatusBadRequest
 }

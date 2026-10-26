@@ -14,15 +14,24 @@ Each addition is small and useful to the Jellyfin plugin too. Version the API ad
 
 ## Tasks
 
-- [ ] `duration` in `trackOut`; doc in `docs/api.md`.
-- [ ] `exclude` on `/v1/path` (and `/v1/similar` for symmetry); test that an excluded destination
+- [x] `duration` in `trackOut`; doc in `docs/api.md`.
+- [x] `exclude` on `/v1/path` (and `/v1/similar` for symmetry); test that an excluded destination
       is still allowed, as for skips.
-- [ ] `/v1/pick` with tests: respects `exclude`, `max_minutes`, artist spread across `count`.
-- [ ] `/v1/search`.
-- [ ] Bump the version in `/v1/health` so the director can check what the server supports and
+- [x] `/v1/pick` with tests: respects `exclude`, `max_minutes`, artist spread across `count`.
+      `theme` is answered 400 for now (not implemented).
+- [x] `/v1/search`. The radio client has `Search`; nothing calls it before R3 `steer`.
+- [x] Bump the version in `/v1/health`: new `api` field (2); absent = 0 on older servers. The
+      director does not read it yet: it falls back on errors (400 on `exclude`, 404 on `/v1/pick`). so the director can check what the server supports and
       fall back (R1 already has fallbacks for each).
+
+## Status notes
+
+Implemented in the neighbeats working tree (`cmd/neighbeats/serve.go`, `serve_pick.go`,
+`docs/api.md`), unit tested, **not committed there** and not yet run on the NAS library.
+The radio side (`internal/neighbeats`, `internal/director/adapters.go`) uses it and still
+falls back against an older server.
 
 ## Exit criteria
 
-- The director runs without its fallbacks (no assumed durations, no client-side repeat filter,
+- [ ] Checked on the real library. The director runs without its fallbacks (no assumed durations, no client-side repeat filter,
   no seed list).

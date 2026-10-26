@@ -3,6 +3,7 @@ package director
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand/v2"
 	"time"
 
@@ -16,15 +17,36 @@ type NeighbeatsRouter struct {
 	Mode       string
 	User       string
 	MaxMinutes int
+
+	noExclude bool // the server does not know `exclude`
 }
 
-// Route asks /v1/path. neighbeats has no `exclude` field until N1, so the repeat
-// filter runs on the answer (plan.filter) and the exclusion list is not sent.
-func (r NeighbeatsRouter) Route(ctx context.Context, from, to plan.Track, length int, _ []string) (plan.Route, error) {
-	res, err := r.Client.Path(ctx, neighbeats.PathRequest{
+func refs(paths []string) []neighbeats.Ref {
+	out := make([]neighbeats.Ref, len(paths))
+	for i, p := range paths {
+		out[i] = neighbeats.Ref{Path: p}
+	}
+	return out
+}
+
+// Route asks /v1/path with the recent plays as `exclude` (API 2). An older server
+// rejects the unknown field with 400, so the router retries once without it and
+// stops sending it; the repeat filter on the answer (plan.filter) covers that case.
+// It stays on with API 2 too, as a safety net.
+func (r *NeighbeatsRouter) Route(ctx context.Context, from, to plan.Track, length int, exclude []string) (plan.Route, error) {
+	req := neighbeats.PathRequest{
 		From: ref(from), To: ref(to), Length: length,
 		Mode: r.Mode, User: r.User, MaxMinutes: r.MaxMinutes,
-	})
+	}
+	if !r.noExclude {
+		req.Exclude = refs(exclude)
+	}
+	res, err := r.Client.Path(ctx, req)
+	if err != nil && len(req.Exclude) > 0 && neighbeats.IsBadRequest(err) {
+		r.noExclude = true
+		req.Exclude = nil
+		res, err = r.Client.Path(ctx, req)
+	}
 	if err != nil {
 		return plan.Route{}, err
 	}
@@ -51,8 +73,41 @@ func fromAPI(t neighbeats.Track) plan.Track {
 	return pt
 }
 
-// SeedPicker draws destinations from a fixed list. It is the fallback until
-// neighbeats has /v1/pick (N1).
+// NeighbeatsPicker draws destinations with /v1/pick. When that fails (an older
+// server, or neighbeats down) it falls back to the seed list if there is one.
+type NeighbeatsPicker struct {
+	Client     *neighbeats.Client
+	Mode       string
+	User       string
+	MaxMinutes int
+	Pool       string // "taste" (default) or "any"
+	Fallback   SeedPicker
+	Log        *slog.Logger
+}
+
+func (p NeighbeatsPicker) Pick(ctx context.Context, exclude []string) (plan.Track, error) {
+	res, err := p.Client.Pick(ctx, neighbeats.PickRequest{
+		Pool: p.Pool, Mode: p.Mode, User: p.User, Exclude: refs(exclude), Count: 1, MaxMinutes: p.MaxMinutes,
+	})
+	if err == nil && len(res.Tracks) == 0 {
+		err = errors.New("neighbeats /v1/pick returned no track")
+	}
+	if err != nil {
+		if len(p.Fallback.Paths) == 0 {
+			return plan.Track{}, err
+		}
+		if p.Log != nil {
+			p.Log.Warn("pick failed, using seed_paths", "err", err)
+		}
+		return p.Fallback.Pick(ctx, exclude)
+	}
+	t := fromAPI(res.Tracks[0])
+	t.Reason = "pick"
+	return t, nil
+}
+
+// SeedPicker draws destinations from a fixed list: the fallback for servers
+// without /v1/pick.
 type SeedPicker struct {
 	Paths []string
 	Rand  func(n int) int
@@ -60,7 +115,7 @@ type SeedPicker struct {
 
 func (s SeedPicker) Pick(_ context.Context, exclude []string) (plan.Track, error) {
 	if len(s.Paths) == 0 {
-		return plan.Track{}, errors.New("no destinations: set director.seed_paths (neighbeats /v1/pick is not available yet)")
+		return plan.Track{}, errors.New("no destinations: set director.seed_paths (neighbeats /v1/pick is not available)")
 	}
 	rnd := s.Rand
 	if rnd == nil {
