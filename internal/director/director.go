@@ -19,7 +19,7 @@ import (
 // Liquidsoap is the part of internal/liq the director uses.
 type Liquidsoap interface {
 	Status(ctx context.Context) (liq.Status, error)
-	Push(ctx context.Context, path string, meta map[string]string) (int, error)
+	Push(ctx context.Context, path string, meta map[string]string) (liq.PushResult, error)
 	Flush(ctx context.Context) error
 	Skip(ctx context.Context) error
 	PushVoice(ctx context.Context, path string) error
@@ -163,7 +163,7 @@ func (d *Director) Step(ctx context.Context) {
 	// The crossfade takes the next request out of the queue a few seconds before the
 	// track change, whatever is on air, so one fewer than pushed is normal; two fewer
 	// is a lost queue. That request is not in the queue to be flushed either: it stays
-	// pushed, or it would play twice.
+	// pushed, or it would play twice. Liquidsoap names that request when it can.
 	const slack = 1
 	if st.Queued+slack < d.planner.Pushed() {
 		d.log.Warn("liquidsoap lost queued tracks", "queued", st.Queued, "pushed", d.planner.Pushed(), "slack", slack,
@@ -172,7 +172,11 @@ func (d *Director) Step(ctx context.Context) {
 			d.log.Warn("flush", "err", err)
 			return
 		}
-		d.planner.Requeue(1)
+		if st.Lookahead != "" {
+			d.planner.RequeueExcept(st.Lookahead)
+		} else {
+			d.planner.Requeue(slack)
+		}
 		d.voices = map[string]*voiceJob{}
 		st.Queued = 0
 		d.dirty = true
@@ -269,9 +273,20 @@ func (d *Director) push(ctx context.Context, queued int) {
 			d.dirty = true
 			continue
 		}
-		_, err := d.lq.Push(ctx, it.Path, d.fadeMeta(it))
+		res, err := d.lq.Push(ctx, it.Path, d.fadeMeta(it))
 		var le *liq.Error
 		switch {
+		case err == nil && res.Duplicate == liq.DupLookahead:
+			// Liquidsoap already holds it as the next track (a restart or a flush lost our
+			// record of the push). That request is the real one: keep the item pushed so it
+			// is recognised when it starts, and queue nothing.
+			d.log.Warn("already taken by the crossfade, not pushed again", "path", it.Path)
+			d.dirty = true
+			d.planBreak(ctx, it)
+		case err == nil && res.Duplicate != "":
+			d.log.Warn("liquidsoap already has it, dropped from the plan", "path", it.Path, "where", res.Duplicate)
+			d.planner.Reject(it.Path)
+			d.dirty = true
 		case err == nil:
 			d.dirty = true
 			d.planBreak(ctx, it)

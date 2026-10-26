@@ -32,27 +32,40 @@ type fakeLiq struct {
 	skips     int
 	voices    []string
 	voiceErr  error
-	lostReply bool // a push is queued but its answer is lost
+	lostReply bool   // a push is queued but its answer is lost
+	lookahead string // taken out of the queue by the crossfade, not on air yet
 }
 
 func (f *fakeLiq) Status(context.Context) (liq.Status, error) {
 	if f.down != nil {
 		return liq.Status{}, f.down
 	}
-	return liq.Status{TrackID: f.trackID, Queued: len(f.queue), Current: liq.Track{Filename: f.current, Artist: "liq-artist", Title: "liq-title"}}, nil
+	return liq.Status{TrackID: f.trackID, Queued: len(f.queue), Current: liq.Track{Filename: f.current, Artist: "liq-artist", Title: "liq-title"}, Lookahead: f.lookahead}, nil
 }
 
-func (f *fakeLiq) Push(_ context.Context, path string, meta map[string]string) (int, error) {
+func (f *fakeLiq) Push(_ context.Context, path string, meta map[string]string) (liq.PushResult, error) {
 	if f.missing[path] {
-		return 0, &liq.Error{Path: "/control/push", Code: 404, Msg: "no such file"}
+		return liq.PushResult{}, &liq.Error{Path: "/control/push", Code: 404, Msg: "no such file"}
+	}
+	// Like radio.liq: a file it already holds is refused.
+	switch {
+	case path == f.current:
+		return liq.PushResult{Queued: len(f.queue), Duplicate: liq.DupCurrent}, nil
+	case path == f.lookahead:
+		return liq.PushResult{Queued: len(f.queue), Duplicate: liq.DupLookahead}, nil
+	}
+	for _, q := range f.queue {
+		if q == path {
+			return liq.PushResult{Queued: len(f.queue), Duplicate: liq.DupQueued}, nil
+		}
 	}
 	f.pushes = append(f.pushes, path)
 	f.metas = append(f.metas, meta)
 	f.queue = append(f.queue, path)
 	if f.lostReply {
-		return 0, errors.New("connection reset by peer")
+		return liq.PushResult{}, errors.New("connection reset by peer")
 	}
-	return len(f.queue), nil
+	return liq.PushResult{Queued: len(f.queue)}, nil
 }
 
 func (f *fakeLiq) Flush(context.Context) error { f.queue = nil; f.flushes++; return nil }
@@ -680,5 +693,72 @@ func TestLateMetadataMatchesPlannedTrack(t *testing.T) {
 	h.step()
 	if now := h.d.Now(); now.Playing.Path != want || now.Playing.Reason == "fallback" {
 		t.Fatalf("now %+v", now.Playing)
+	}
+}
+
+// The crossfade holds the next request when the director restarts. The restored plan
+// would push it again, and it would air twice in a row.
+func TestDirectorRestartDoesNotRepushTheLookahead(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	h.lq.advance() // dest001 starts
+	h.step()
+	held := h.lq.queue[0]
+	h.lq.lookahead, h.lq.queue = held, h.lq.queue[1:] // the crossfade pulled it
+
+	h2 := newHarness(t, h.st, h.lq)
+	h2.step()
+	for _, q := range h.lq.queue {
+		if q == held {
+			t.Fatalf("%s queued again behind its own look-ahead: %v", held, h.lq.queue)
+		}
+	}
+	h.lq.current, h.lq.lookahead = held, ""
+	h.lq.trackID++
+	h2.step()
+	if now := h2.d.Now(); now.Playing == nil || now.Playing.Path != held || now.Playing.Reason == "fallback" {
+		t.Fatalf("now %+v", now.Playing)
+	}
+}
+
+// A file Liquidsoap already queues is dropped from the plan, not counted as pushed.
+func TestDuplicateInQueueIsRejected(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	dup := h.lq.queue[0]
+	h.lq.queue = h.lq.queue[:1] // room for one more push
+	h.pl.Requeue(0)             // the plan forgets the pushes; Liquidsoap still queues the first
+	h.step()
+	n := 0
+	for _, q := range h.lq.queue {
+		if q == dup {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%s queued %d times: %v", dup, n, h.lq.queue)
+	}
+	for _, it := range h.pl.Items() {
+		if it.Path == dup {
+			t.Fatalf("%s still in the plan: %+v", dup, it)
+		}
+	}
+}
+
+// A lost queue keeps exactly the request Liquidsoap says the crossfade holds.
+func TestLostQueueKeepsNamedLookahead(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	held := h.lq.pushes[1] // not the first: the old guess would keep the wrong one
+	h.lq.lookahead, h.lq.queue = held, nil
+	h.step()
+	n := 0
+	for _, p := range h.lq.pushes {
+		if p == held {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%s pushed %d times: %v", held, n, h.lq.pushes)
 	}
 }

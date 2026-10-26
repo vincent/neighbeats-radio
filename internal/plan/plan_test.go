@@ -434,3 +434,18 @@ func TestRequeueKeepsFirstPushed(t *testing.T) {
 		t.Fatalf("items %+v", it)
 	}
 }
+
+func TestRequeueExceptKeepsNamedItem(t *testing.T) {
+	p := New(cfg(), &fakeRouter{}, &fakePicker{paths: []string{"/s", "/d1"}}, nil, func(int) int { return 0 })
+	p.Fill(context.Background(), t0)
+	took := p.TakeForPush(2)
+	p.RequeueExcept(took[1].Path)
+	if p.Pushed() != 1 {
+		t.Fatalf("pushed %d", p.Pushed())
+	}
+	for _, it := range p.Items() {
+		if it.State == Pushed && it.Path != took[1].Path {
+			t.Fatalf("kept %s", it.Path)
+		}
+	}
+}

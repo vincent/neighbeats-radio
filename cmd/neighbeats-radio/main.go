@@ -87,11 +87,15 @@ func run(ctx context.Context, args []string) error {
 		if len(rest) != 1 {
 			return fmt.Errorf("push: want exactly one PATH")
 		}
-		n, err := lq.Push(ctx, rest[0], nil)
+		res, err := lq.Push(ctx, rest[0], nil)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("pushed, %d queued\n", n)
+		if res.Duplicate != "" {
+			fmt.Printf("refused, already %s\n", res.Duplicate)
+			return nil
+		}
+		fmt.Printf("pushed, %d queued\n", res.Queued)
 		return nil
 	case "liq-skip":
 		return lq.Skip(ctx)

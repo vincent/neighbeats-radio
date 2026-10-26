@@ -112,6 +112,19 @@ configs:
       # Jellyfin uses, so neighbeats' answers are playable as they come.
       music = request.queue(id="music")
 
+      # What was pushed and still waits in the queue, and the file the music chain took out of
+      # it last (the crossfade does that a few seconds before the track change, so it is neither
+      # queued nor on air for a while). A push of any of them is refused: it would air twice.
+      pending = ref([])
+      taken = ref("")
+      music.on_metadata(synchronous=false, fun (m) -> begin
+        f = m["filename"]
+        if f != "" then
+          taken := f
+          pending := list.filter(fun (p) -> p != f, pending())
+        end
+      end)
+
       # --- transitions (R2) --------------------------------------------------------
 
       # Trim silence at the head and tail of tracks.
@@ -180,6 +193,7 @@ configs:
         title = m["title"]
         current := [("filename", filename), ("artist", artist), ("title", title)]
         cover := if m["coverart"] != "" or filename == "" then [] else find_cover(filename) end
+        if filename == taken() then taken := "" end
         resend := 5 # the next tick sends the new cover
         log("track #{track_id()}: #{artist} - #{title} (#{filename})")
       end)
@@ -192,6 +206,7 @@ configs:
         title = m["title"]
         if filename != "" and filename != list.assoc(default="", "filename", current()) then
           current := [("filename", filename), ("artist", artist), ("title", title)]
+          if filename == taken() then taken := "" end
           cover := if m["coverart"] != "" then [] else find_cover(filename) end
           resend := 5
           log("late metadata: #{artist} - #{title} (#{filename})")
@@ -231,12 +246,14 @@ configs:
       end
 
       # GET /control/status
-      #   {"track_id": 7, "queued": 1, "current": {"filename": ..., "artist": ..., "title": ...}}
-      # "queued" counts requests waiting behind the one playing.
+      #   {"track_id": 7, "queued": 1, "lookahead": "", "current": {"filename": ..., "artist": ..., "title": ...}}
+      # "queued" counts requests waiting behind the one playing. "lookahead" is the file the
+      # crossfade already took out of the queue and that is not on air yet, or "".
       harbor.http.register(port=control_port, method="GET", "/control/status", fun (_, response) -> begin
         response.json({
           track_id = track_id(),
           queued = list.length(music.queue()),
+          lookahead = if taken() != list.assoc(default="", "filename", current()) then taken() else "" end,
           current = {
             filename = list.assoc(default="", "filename", current()),
             artist = list.assoc(default="", "artist", current()),
@@ -246,6 +263,8 @@ configs:
       end)
 
       # POST /control/push[?liq_cross_duration=6.5&...]   body: an absolute path (raw text, no quoting)
+      # A file Liquidsoap already has (on air, taken by the crossfade, or queued) is not queued
+      # again: the answer is 200 with "duplicate": "current" | "lookahead" | "queued".
       # Query keys starting with "liq_" become request metadata (crossfade length, fades).
       harbor.http.register(port=control_port, method="POST", "/control/push", fun (req, response) -> begin
         file_path = string.trim(req.body())
@@ -253,12 +272,22 @@ configs:
           reply_error(response, 400, "body must be an absolute path")
         elsif not file.exists(file_path) then
           reply_error(response, 404, "no such file: #{file_path}")
+        elsif file_path == list.assoc(default="", "filename", current()) then
+          log.important("push refused, already current: #{file_path}")
+          response.json({pushed = file_path, queued = list.length(music.queue()), duplicate = "current"})
+        elsif file_path == taken() then
+          log.important("push refused, already taken by the crossfade: #{file_path}")
+          response.json({pushed = file_path, queued = list.length(music.queue()), duplicate = "lookahead"})
+        elsif list.filter(fun (p) -> p == file_path, pending()) != [] then
+          log.important("push refused, already queued: #{file_path}")
+          response.json({pushed = file_path, queued = list.length(music.queue()), duplicate = "queued"})
         else
           meta = list.filter(fun (kv) -> string.sub(fst(kv), start=0, length=4) == "liq_", req.query)
           pairs = list.map(fun (kv) -> "#{fst(kv)}=\"#{string.escape(snd(kv))}\"", meta)
           joined = string.concat(separator=",", pairs)
           uri = if pairs == [] then file_path else "annotate:#{joined}:#{file_path}" end
           music.push(request.create(uri))
+          pending := list.append(pending(), [file_path])
           response.json({pushed = file_path, queued = list.length(music.queue())})
         end
       end)
@@ -286,6 +315,7 @@ configs:
       # POST /control/flush: drop everything waiting in the music queue (not the current track).
       harbor.http.register(port=control_port, method="POST", "/control/flush", fun (_, response) -> begin
         music.set_queue([])
+        pending := []
         voice.set_queue([])
         response.json({queued = 0})
       end)

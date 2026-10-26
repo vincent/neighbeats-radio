@@ -438,6 +438,24 @@ func (p *Planner) Requeue(keep int) {
 	}
 }
 
+// RequeueExcept is Requeue for when Liquidsoap says which request the crossfade
+// holds: that one stays pushed, every other pushed item is planned again.
+func (p *Planner) RequeueExcept(path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	kept := false
+	for i := range p.items {
+		if p.items[i].State != Pushed {
+			continue
+		}
+		if !kept && p.items[i].Path == path {
+			kept = true
+			continue
+		}
+		p.items[i].State = Planned
+	}
+}
+
 // Unpush puts a pushed item back to planned, for a push that did not reach Liquidsoap.
 func (p *Planner) Unpush(path string) {
 	p.mu.Lock()

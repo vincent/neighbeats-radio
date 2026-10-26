@@ -25,6 +25,23 @@ type Status struct {
 	TrackID int   `json:"track_id"`
 	Queued  int   `json:"queued"`
 	Current Track `json:"current"`
+	// Lookahead is the file the crossfade already took out of the queue and that is
+	// not on air yet. The queue count does not include it, and it will play.
+	Lookahead string `json:"lookahead"`
+}
+
+// Duplicate reasons: Liquidsoap refuses a push of a file it already has.
+const (
+	DupQueued    = "queued"    // waiting in the queue
+	DupLookahead = "lookahead" // taken by the crossfade, about to air
+	DupCurrent   = "current"   // on air
+)
+
+// PushResult is the answer to a push. Duplicate is set when Liquidsoap refused the
+// file because it already holds it; nothing was queued then.
+type PushResult struct {
+	Queued    int    `json:"queued"`
+	Duplicate string `json:"duplicate"`
 }
 
 // Error is a non-200 answer. Code 404 on push means the file does not exist.
@@ -63,11 +80,10 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 
 // Push queues an absolute path. meta becomes request metadata in Liquidsoap (for
 // example liq_cross_duration, read by the crossfade); nil sends the path alone.
-// It returns the queue length after the push.
-func (c *Client) Push(ctx context.Context, path string, meta map[string]string) (int, error) {
-	var out struct {
-		Queued int `json:"queued"`
-	}
+// It returns the queue length after the push, or why Liquidsoap refused a file it
+// already holds.
+func (c *Client) Push(ctx context.Context, path string, meta map[string]string) (PushResult, error) {
+	var out PushResult
 	endpoint := "/control/push"
 	if len(meta) > 0 {
 		q := url.Values{}
@@ -77,7 +93,7 @@ func (c *Client) Push(ctx context.Context, path string, meta map[string]string) 
 		endpoint += "?" + q.Encode()
 	}
 	err := c.do(ctx, http.MethodPost, endpoint, path, &out)
-	return out.Queued, err
+	return out, err
 }
 
 // PushVoice queues a spoken break. It plays over the music at once, so push it when

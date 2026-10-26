@@ -40,9 +40,9 @@ func TestPushSendsRawPath(t *testing.T) {
 		io.WriteString(w, `{"pushed":"x","queued":2}`)
 	}))
 	defer srv.Close()
-	n, err := New(srv.URL, time.Second).Push(context.Background(), path, nil)
-	if err != nil || n != 2 {
-		t.Fatalf("n=%d err=%v", n, err)
+	res, err := New(srv.URL, time.Second).Push(context.Background(), path, nil)
+	if err != nil || res.Queued != 2 || res.Duplicate != "" {
+		t.Fatalf("res=%+v err=%v", res, err)
 	}
 	if got != path {
 		t.Fatalf("body %q", got)
@@ -104,5 +104,27 @@ func TestPushSendsMetadataAsQuery(t *testing.T) {
 	}
 	if query.Get("liq_cross_duration") != "6.5" {
 		t.Fatalf("query %v", query)
+	}
+}
+
+func TestPushReportsDuplicate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"pushed":"/m/a.mp3","queued":1,"duplicate":"lookahead"}`)
+	}))
+	defer srv.Close()
+	res, err := New(srv.URL, time.Second).Push(context.Background(), "/m/a.mp3", nil)
+	if err != nil || res.Duplicate != DupLookahead {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+func TestStatusReadsLookahead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"track_id":3,"queued":0,"lookahead":"/m/b.mp3","current":{"filename":"/m/a.mp3","artist":"A","title":"T"}}`)
+	}))
+	defer srv.Close()
+	s, err := New(srv.URL, time.Second).Status(context.Background())
+	if err != nil || s.Lookahead != "/m/b.mp3" {
+		t.Fatalf("s=%+v err=%v", s, err)
 	}
 }
