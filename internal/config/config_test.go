@@ -58,3 +58,19 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestVoiceValidatedOnlyWhenEnabled(t *testing.T) {
+	c := Default()
+	c.Voice.EveryMin, c.Voice.EveryMax = 6, 4
+	if err := c.Validate(); err != nil {
+		t.Fatalf("disabled voice must not be validated: %v", err)
+	}
+	c.Voice.Enabled = true
+	if err := c.Validate(); err == nil {
+		t.Fatal("every_min > every_max must fail when enabled")
+	}
+	c.Voice.EveryMin = 4
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

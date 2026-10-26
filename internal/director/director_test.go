@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/vincent/neighbeats-radio/internal/liq"
 	"github.com/vincent/neighbeats-radio/internal/plan"
+	"github.com/vincent/neighbeats-radio/internal/speak"
 	"github.com/vincent/neighbeats-radio/internal/state"
 )
 
@@ -18,15 +21,17 @@ var ctx = context.Background()
 
 // fakeLiq simulates Liquidsoap: a current track, a queue, a track counter.
 type fakeLiq struct {
-	trackID int
-	current string
-	queue   []string
-	missing map[string]bool
-	down    error
-	pushes  []string
-	metas   []map[string]string
-	flushes int
-	skips   int
+	trackID  int
+	current  string
+	queue    []string
+	missing  map[string]bool
+	down     error
+	pushes   []string
+	metas    []map[string]string
+	flushes  int
+	skips    int
+	voices   []string
+	voiceErr error
 }
 
 func (f *fakeLiq) Status(context.Context) (liq.Status, error) {
@@ -47,6 +52,11 @@ func (f *fakeLiq) Push(_ context.Context, path string, meta map[string]string) (
 }
 
 func (f *fakeLiq) Flush(context.Context) error { f.queue = nil; f.flushes++; return nil }
+
+func (f *fakeLiq) PushVoice(_ context.Context, path string) error {
+	f.voices = append(f.voices, path)
+	return f.voiceErr
+}
 
 func (f *fakeLiq) Skip(context.Context) error { f.skips++; f.advance(); return nil }
 
@@ -413,5 +423,148 @@ func TestSteerReplacesTailAndNeverTouchesPushed(t *testing.T) {
 	last := h.d.Queue()
 	if last[len(last)-1].Path != "/m/target.mp3" {
 		t.Fatalf("tail %v", last)
+	}
+}
+
+type fakeSpeaker struct {
+	err   error
+	gate  chan struct{} // when set, Render blocks until closed
+	texts []string
+	mu    sync.Mutex
+}
+
+func (f *fakeSpeaker) said() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.texts...)
+}
+
+func (f *fakeSpeaker) Render(_ context.Context, text string) (string, error) {
+	if f.gate != nil {
+		<-f.gate
+	}
+	f.mu.Lock()
+	f.texts = append(f.texts, text)
+	f.mu.Unlock()
+	if f.err != nil {
+		return "", f.err
+	}
+	return "/spool/voice/" + fmt.Sprint(len(text)) + ".wav", nil
+}
+
+type echoWords struct{}
+
+func (echoWords) Text(m string, d speak.Data) (string, error) {
+	return m + ": " + d.Prev.Artist + " > " + d.Next.Artist + " / " + d.Dest.Artist, nil
+}
+
+// voiceHarness is a harness where every track is followed by a break.
+func voiceHarness(t *testing.T, sp Speaker) *harness {
+	t.Helper()
+	h := newHarness(t, nil, nil)
+	h.d.cfg.Voice = &Voice{
+		Breaks:  NewBreaks(BreakConfig{EveryMin: 1, EveryMax: 1, OnSteer: true}, func(int) int { return 0 }),
+		Speaker: sp, Words: echoWords{},
+	}
+	return h
+}
+
+func waitJobs(h *harness) {
+	for _, j := range h.d.voices {
+		<-j.done
+	}
+}
+
+func TestBreakIsQueuedWhenItsTrackStarts(t *testing.T) {
+	sp := &fakeSpeaker{}
+	h := voiceHarness(t, sp)
+	h.step() // pushes dest001 (no predecessor) and t001 (break due)
+	waitJobs(h)
+	if len(h.lq.voices) != 0 {
+		t.Fatalf("voice pushed before its track started: %v", h.lq.voices)
+	}
+	h.lq.advance() // dest001 starts
+	h.step()
+	if len(h.lq.voices) != 0 {
+		t.Fatalf("break for t001 played over dest001: %v", h.lq.voices)
+	}
+	h.lq.advance() // t001 starts
+	h.step()
+	if len(h.lq.voices) != 1 || len(sp.said()) == 0 || !strings.Contains(sp.said()[0], "D > A") {
+		t.Fatalf("voices %v texts %v", h.lq.voices, sp.said())
+	}
+}
+
+func TestBreakDroppedWhenItsTrackIsSkippedOver(t *testing.T) {
+	h := voiceHarness(t, &fakeSpeaker{})
+	h.step()
+	waitJobs(h)
+	h.lq.advance()
+	h.step()
+	// dest001 is skipped past: whatever starts next is not t001, so t001's break must go.
+	h.lq.queue = nil
+	h.d.planner.Requeue()
+	h.lq.advance() // fallback ident starts
+	h.step()
+	if len(h.lq.voices) != 0 {
+		t.Fatalf("voices %v", h.lq.voices)
+	}
+}
+
+func TestRenderFailureLeavesMusicUnaffected(t *testing.T) {
+	h := voiceHarness(t, &fakeSpeaker{err: errors.New("piper missing")})
+	h.step()
+	waitJobs(h)
+	for i := 0; i < 4; i++ {
+		h.lq.advance()
+		h.step()
+	}
+	if len(h.lq.voices) != 0 || len(h.lq.pushes) < 4 {
+		t.Fatalf("voices %v pushes %v", h.lq.voices, h.lq.pushes)
+	}
+}
+
+func TestSlowRenderIsDroppedNotWaitedFor(t *testing.T) {
+	gate := make(chan struct{})
+	h := voiceHarness(t, &fakeSpeaker{gate: gate})
+	done := make(chan struct{})
+	go func() { h.step(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Step waited for the renderer")
+	}
+	h.lq.advance()
+	h.step()
+	h.lq.advance() // t001 starts while piper is still busy
+	h.step()
+	if len(h.lq.voices) != 0 {
+		t.Fatalf("late break played: %v", h.lq.voices)
+	}
+	close(gate)
+}
+
+func TestSteerBreakNamesDestination(t *testing.T) {
+	sp := &fakeSpeaker{}
+	h := voiceHarness(t, sp)
+	h.d.cfg.Voice.Breaks = NewBreaks(BreakConfig{EveryMin: 100, EveryMax: 100, OnSteer: true}, func(int) int { return 0 })
+	h.step()
+	h.lq.advance()
+	h.step()
+	if _, err := h.d.Steer(ctx, plan.Track{Path: "/m/target.mp3", Artist: "Target"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		h.step()
+		waitJobs(h)
+		h.lq.advance()
+	}
+	h.step()
+	var steered bool
+	for _, s := range sp.said() {
+		steered = steered || (strings.HasPrefix(s, "steer:") && strings.HasSuffix(s, "/ Target"))
+	}
+	if !steered {
+		t.Fatalf("texts %v", sp.said())
 	}
 }

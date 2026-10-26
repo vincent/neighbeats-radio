@@ -18,6 +18,7 @@ import (
 	"github.com/vincent/neighbeats-radio/internal/liq"
 	"github.com/vincent/neighbeats-radio/internal/neighbeats"
 	"github.com/vincent/neighbeats-radio/internal/plan"
+	"github.com/vincent/neighbeats-radio/internal/speak"
 	"github.com/vincent/neighbeats-radio/internal/state"
 )
 
@@ -130,7 +131,12 @@ func runDirector(ctx context.Context, cfg config.Config, lq *liq.Client) error {
 		RepeatWindow: d.RepeatWindow, AssumedTrack: d.AssumedTrack,
 	}, router, picker, log, nil)
 
+	voice, err := newVoice(cfg.Voice, log)
+	if err != nil {
+		return err
+	}
 	dir := director.New(director.Config{
+		Voice:        voice,
 		PollInterval: d.PollInterval, PushWhenBelow: d.PushWhenBelow, RepeatWindow: d.RepeatWindow,
 		Fades: plan.Fades{Close: d.Fades.Close, Mid: d.Fades.Mid, Far: d.Fades.Far, CloseAt: d.Fades.CloseAt, FarAt: d.Fades.FarAt},
 	}, lq, pl, db, log)
@@ -173,4 +179,31 @@ func printQueue(ctx context.Context, cfg config.Config) error {
 	}
 	fmt.Printf("%d tracks, about %s ahead\n", len(items), ahead.Round(time.Minute))
 	return nil
+}
+
+// newVoice sets up spoken breaks, or returns nil when they are off. A voice that
+// cannot start (bad template folder) is a config error; Piper itself failing later
+// only costs the break.
+func newVoice(v config.Voice, log *slog.Logger) (*director.Voice, error) {
+	if !v.Enabled {
+		return nil, nil
+	}
+	fsys := speak.BuiltinFS()
+	if v.Templates != "" {
+		fsys = os.DirFS(v.Templates)
+	}
+	words, err := speak.LoadTemplates(fsys, v.Say)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(v.Model); err != nil {
+		log.Warn("voice model not found, breaks will be skipped", "model", v.Model, "err", err)
+	}
+	return &director.Voice{
+		Breaks: director.NewBreaks(director.BreakConfig{
+			EveryMin: v.EveryMin, EveryMax: v.EveryMax, HourMark: v.HourMark, OnSteer: v.OnSteer, OnLeg: v.OnLeg,
+		}, nil),
+		Speaker: &speak.Renderer{Piper: v.Piper, Model: v.Model, Dir: v.Dir, Timeout: v.Timeout, KeepFor: time.Hour},
+		Words:   words,
+	}, nil
 }

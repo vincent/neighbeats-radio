@@ -490,6 +490,7 @@ type SteerResult struct {
 	Found  bool
 	Why    string
 	Tracks int
+	Leg    int // the leg the steer created
 }
 
 // SteerNow reroutes the station to dest. It routes from the last track already
@@ -548,7 +549,7 @@ func (p *Planner) SteerNow(ctx context.Context, dest Track, now time.Time) (Stee
 	p.steered = nil
 	p.epoch++
 	p.log.Info("steered", "leg", leg, "to", dest.Path, "tracks", len(tracks))
-	return SteerResult{Found: true, Tracks: len(tracks)}, nil
+	return SteerResult{Found: true, Tracks: len(tracks), Leg: leg}, nil
 }
 
 // SkipPlaying marks the playing item skipped and returns it.
@@ -561,6 +562,30 @@ func (p *Planner) SkipPlaying() (Item, bool) {
 			it := p.items[i]
 			p.compact()
 			return it, true
+		}
+	}
+	return Item{}, false
+}
+
+// Before returns the item queued right before the one with this path, if any.
+func (p *Planner) Before(path string) (Item, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, it := range p.items {
+		if it.Path == path && i > 0 {
+			return p.items[i-1], true
+		}
+	}
+	return Item{}, false
+}
+
+// LegEnd returns the last item of a leg: where that leg is heading.
+func (p *Planner) LegEnd(leg int) (Item, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := len(p.items) - 1; i >= 0; i-- {
+		if p.items[i].Leg == leg {
+			return p.items[i], true
 		}
 	}
 	return Item{}, false

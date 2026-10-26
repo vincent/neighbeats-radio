@@ -29,6 +29,21 @@ director:
     close_at: 0.8
     far_at: 0.5
 
+# Spoken breaks between tracks (Piper, English). Needs the voice in the image or in ./models.
+voice:
+  enabled: false
+  piper: /opt/piper/piper
+  model: /opt/piper/voice.onnx         # or /models/other.onnx (mount ./models)
+  dir: /spool/voice                    # shared with Liquidsoap
+  timeout: 8s                          # a sentence slower than this is dropped, music unaffected
+  templates: ""                        # folder with between/hour/steer/leg.tmpl; empty = built-in
+  every_min: 4                         # a break every 4-6 tracks, never twice in a row
+  every_max: 6
+  hour_mark: true
+  on_steer: true
+  on_leg: true
+  say: {}                              # {"Sigur Rós": "Sigur Ross"}: names Piper mangles
+
 control:
   socket: /run/neighbeats-radio/neighbeats-radio.sock   # served by `run`, used by now/skip/steer/...
   timeout: 10s

@@ -30,6 +30,12 @@ Configuration: `cp config.example.yaml config.yaml`, `cp .env.example .env`.
 socket (`control.socket`, `./run` in the compose file), so from the host or a container alike:
 `docker compose exec neighbeats-radio /neighbeats-radio now`.
 
+Spoken breaks (`voice.enabled: true`): every 4-6 tracks, at the top of the hour, on a steer and at
+the start of a leg, a short English sentence from `internal/speak/templates/en` is rendered with
+Piper and played over the start of the next track, with the music ducked. Piper and one voice are in
+the image; other voices go in `./models`, your own wording in `./templates` (`between`, `hour`,
+`steer`, `leg` `.tmpl`, variants separated by `---`). If Piper fails or is slow, there is no break.
+
 Crossfades are 5 s by default; the director lengthens them for close hops and shortens them for
 distant ones (`director.fades`).
 

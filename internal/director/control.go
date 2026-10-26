@@ -97,6 +97,7 @@ func (d *Director) Steer(ctx context.Context, dest plan.Track) (plan.SteerResult
 	if res.Found {
 		d.mu.Lock()
 		d.dirty = true
+		d.steerLeg = res.Leg
 		d.mu.Unlock()
 	}
 	return res, nil
@@ -114,6 +115,7 @@ func (d *Director) Pause(ctx context.Context) error {
 		return err
 	}
 	d.planner.Requeue()
+	d.voices = map[string]*voiceJob{}
 	if err := d.skip(ctx); err != nil {
 		return err
 	}

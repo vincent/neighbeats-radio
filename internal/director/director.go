@@ -22,6 +22,7 @@ type Liquidsoap interface {
 	Push(ctx context.Context, path string, meta map[string]string) (int, error)
 	Flush(ctx context.Context) error
 	Skip(ctx context.Context) error
+	PushVoice(ctx context.Context, path string) error
 }
 
 // Store is the part of internal/state the director uses.
@@ -44,6 +45,8 @@ type Config struct {
 	RetryAfter time.Duration
 	// Fades picks the crossfade length from the hop cosine. Zero value = plan.DefaultFades.
 	Fades plan.Fades
+	// Voice is optional: nil means no spoken breaks.
+	Voice *Voice
 }
 
 type Director struct {
@@ -64,6 +67,8 @@ type Director struct {
 	retryAt     time.Time
 	dirty       bool
 	paused      bool
+	voices      map[string]*voiceJob // pushed track path -> its break, rendering or ready
+	steerLeg    int                  // the leg a steer created, until its first track is pushed
 }
 
 func New(cfg Config, lq Liquidsoap, p *plan.Planner, st Store, log *slog.Logger) *Director {
@@ -73,7 +78,7 @@ func New(cfg Config, lq Liquidsoap, p *plan.Planner, st Store, log *slog.Logger)
 	if cfg.RetryAfter == 0 {
 		cfg.RetryAfter = 10 * time.Second
 	}
-	return &Director{cfg: cfg, lq: lq, planner: p, store: st, log: log, now: time.Now}
+	return &Director{cfg: cfg, lq: lq, planner: p, store: st, log: log, now: time.Now, voices: map[string]*voiceJob{}}
 }
 
 // Run polls until ctx ends. Errors inside a step are logged, never fatal: the
@@ -143,6 +148,7 @@ func (d *Director) Step(ctx context.Context) {
 		// Liquidsoap restarted: its queue is gone, ours must be pushed again.
 		d.log.Warn("liquidsoap restarted", "was", d.lastTrackID, "now", st.TrackID)
 		d.planner.Requeue()
+		d.voices = map[string]*voiceJob{}
 		d.dirty = true
 		d.lastTrackID = st.TrackID
 		d.trackStarted(ctx, st.Current)
@@ -160,6 +166,7 @@ func (d *Director) Step(ctx context.Context) {
 			return
 		}
 		d.planner.Requeue()
+		d.voices = map[string]*voiceJob{}
 		st.Queued = 0
 		d.dirty = true
 	}
@@ -193,6 +200,9 @@ func (d *Director) trackStarted(ctx context.Context, cur liq.Track) {
 	} else {
 		// A fallback track or the ident: not planned by us, still part of history.
 		it = plan.Item{Track: plan.Track{Path: cur.Filename, Artist: cur.Artist, Title: cur.Title, Reason: "fallback"}}
+	}
+	if ours {
+		d.sayBreak(ctx, it.Path)
 	}
 	if it.Artist == "" {
 		it.Artist = cur.Artist
@@ -243,6 +253,7 @@ func (d *Director) push(ctx context.Context, queued int) {
 		switch {
 		case err == nil:
 			d.dirty = true
+			d.planBreak(ctx, it)
 		case errors.As(err, &le) && le.Code == 404:
 			d.log.Warn("file missing, dropped from the plan", "path", it.Path)
 			d.planner.Reject(it.Path)

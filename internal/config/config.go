@@ -15,8 +15,26 @@ type Config struct {
 	Liquidsoap Liquidsoap `yaml:"liquidsoap"`
 	Neighbeats Neighbeats `yaml:"neighbeats"`
 	Director   Director   `yaml:"director"`
+	Voice      Voice      `yaml:"voice"`
 	Control    Control    `yaml:"control"`
 	Data       string     `yaml:"data"`
+}
+
+// Voice is the spoken breaks (R4). Off by default.
+type Voice struct {
+	Enabled   bool          `yaml:"enabled"`
+	Piper     string        `yaml:"piper"`     // the piper binary
+	Model     string        `yaml:"model"`     // the .onnx voice
+	Dir       string        `yaml:"dir"`       // rendered WAVs; Liquidsoap reads the same folder
+	Timeout   time.Duration `yaml:"timeout"`   // per sentence
+	Templates string        `yaml:"templates"` // folder of <moment>.tmpl files; empty = built-in English
+	EveryMin  int           `yaml:"every_min"`
+	EveryMax  int           `yaml:"every_max"`
+	HourMark  bool          `yaml:"hour_mark"`
+	OnSteer   bool          `yaml:"on_steer"`
+	OnLeg     bool          `yaml:"on_leg"`
+	// Say maps a name as written to how Piper should be told to say it.
+	Say map[string]string `yaml:"say"`
 }
 
 // Control is the command socket `run` serves and the other commands dial.
@@ -78,6 +96,10 @@ func Default() Config {
 			PushWhenBelow: 2,
 			Fades:         Fades{Close: 8 * time.Second, Mid: 5 * time.Second, Far: 1500 * time.Millisecond, CloseAt: 0.8, FarAt: 0.5},
 		},
+		Voice: Voice{
+			Piper: "/opt/piper/piper", Model: "/opt/piper/voice.onnx", Dir: "/spool/voice", Timeout: 8 * time.Second,
+			EveryMin: 4, EveryMax: 6, HourMark: true, OnSteer: true, OnLeg: true,
+		},
 		Control: Control{Socket: "/run/neighbeats-radio/neighbeats-radio.sock", Timeout: 10 * time.Second},
 		Data:    "/data",
 	}
@@ -120,6 +142,14 @@ func (c Config) Validate() error {
 	f := d.Fades
 	if f.Close <= 0 || f.Mid <= 0 || f.Far <= 0 || f.FarAt < 0 || f.CloseAt > 1 || f.FarAt > f.CloseAt {
 		return fmt.Errorf("config: director.fades: want positive lengths and 0 <= far_at <= close_at <= 1")
+	}
+	if v := c.Voice; v.Enabled {
+		if v.Piper == "" || v.Model == "" || v.Dir == "" || v.Timeout <= 0 {
+			return fmt.Errorf("config: voice.piper, model, dir and timeout must be set")
+		}
+		if v.EveryMin < 1 || v.EveryMax < v.EveryMin {
+			return fmt.Errorf("config: voice.every_min/every_max %d/%d: want 1 <= min <= max", v.EveryMin, v.EveryMax)
+		}
 	}
 	if c.Control.Socket == "" || c.Control.Timeout <= 0 {
 		return fmt.Errorf("config: control.socket and control.timeout must be set")

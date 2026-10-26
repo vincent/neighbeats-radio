@@ -75,6 +75,12 @@ func (c *Client) Push(ctx context.Context, path string, meta map[string]string) 
 	return out.Queued, err
 }
 
+// PushVoice queues a spoken break. It plays over the music at once, so push it when
+// the track it introduces starts.
+func (c *Client) PushVoice(ctx context.Context, path string) error {
+	return c.do(ctx, http.MethodPost, "/control/voice", path, nil)
+}
+
 func (c *Client) Skip(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/control/skip", "", nil)
 }

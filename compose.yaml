@@ -2,7 +2,7 @@
 #
 # One-time setup:
 #   cp .env.example .env && cp config.example.yaml config.yaml    # then edit both
-#   mkdir -p data spool run fallback                                  # fallback: a few known-good tracks
+#   mkdir -p data spool/voice run models templates fallback                                  # fallback: a few known-good tracks
 #   docker compose up -d
 # On a VPS only compose.yaml, .env, config.yaml and those folders are needed: the director
 # image comes from ghcr and radio.liq is embedded below (top-level `configs`, Compose >= 2.23.1).
@@ -39,18 +39,20 @@ services:
         target: ${MUSIC_PATH:?set MUSIC_PATH to the music folder as Jellyfin sees it}
         read_only: true
       - ./fallback:/fallback:ro
+      # Spoken breaks the director renders (R4).
+      - ./spool/voice:/spool/voice:ro
     networks:
       - internal
       - traefik
     labels:
       traefik.enable: "true"
       traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
-      traefik.http.routers.radio.rule: Host(`${RADIO_HOST:?set RADIO_HOST}`)
-      traefik.http.routers.radio.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
-      traefik.http.routers.radio.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-letsencrypt}
-      traefik.http.routers.radio.middlewares: radio-auth
+      traefik.http.routers.soap.rule: Host(`${RADIO_HOST:?set RADIO_HOST}`)
+      traefik.http.routers.soap.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.http.routers.soap.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      traefik.http.routers.soap.middlewares: radio-auth
       traefik.http.middlewares.radio-auth.basicauth.users: ${RADIO_BASICAUTH:?set RADIO_BASICAUTH}
-      traefik.http.services.radio.loadbalancer.server.port: "8000"
+      traefik.http.services.soap.loadbalancer.server.port: "8000"
 
   # Director: polls the queue, picks tracks via the neighbeats API (unix socket in
   # NEIGHBEATS_RUN) and pushes them to liquidsoap over the internal network.
@@ -75,6 +77,10 @@ services:
       # Command socket (`docker compose exec neighbeats-radio /neighbeats-radio now`, or
       # from the host with control.socket pointed at ./run/neighbeats-radio.sock).
       - ./run:/run/neighbeats-radio
+      # Optional: other Piper voices (voice.model: /models/x.onnx) and custom templates
+      # (voice.templates: /templates).
+      - ./models:/models:ro
+      - ./templates:/templates:ro
       # neighbeats' run folder holds neighbeats.sock (its group must be ours, mode 0660).
       - ${NEIGHBEATS_RUN:-../neighbeats/run}:/run/neighbeats
     networks:
@@ -126,17 +132,15 @@ configs:
       # Last resort so the chain is never empty: a quiet tone.
       ident_loop = amplify(0.05, sine(440.))
 
-      radio = fallback(track_sensitive=false, [music_x, safe, ident_loop])
-
-      # Safety net against clipping from tracks of very different level.
-      radio = limit(radio)
+      on_air = fallback(track_sensitive=false, [music_x, safe, ident_loop])
 
       # --- what is playing ---------------------------------------------------------
+      # Counted on the music chain, before the voice is mixed in: a spoken break is not a track.
 
       track_id = ref(0)
       current = ref([("filename", ""), ("artist", ""), ("title", "")])
 
-      radio.on_track(synchronous=false, fun (m) -> begin
+      on_air.on_track(synchronous=false, fun (m) -> begin
         track_id := track_id() + 1
         filename = m["filename"]
         artist = m["artist"]
@@ -144,6 +148,16 @@ configs:
         current := [("filename", filename), ("artist", artist), ("title", title)]
         log("track #{track_id()}: #{artist} - #{title} (#{filename})")
       end)
+
+      # --- voice (R4) --------------------------------------------------------------
+
+      # Spoken breaks rendered by the director into /spool/voice. Music drops to about a
+      # quarter of its level (-12 dB) while a break plays, and comes back smoothly.
+      voice = request.queue(id="voice")
+      mixed = smooth_add(delay=0.5, p=0.25, normal=on_air, special=voice)
+
+      # Safety net against clipping from tracks of very different level.
+      radio = limit(mixed)
 
       # --- control API -------------------------------------------------------------
       # Plain HTTP + JSON, so the Go side needs no telnet client.
@@ -183,6 +197,19 @@ configs:
         end
       end)
 
+      # POST /control/voice   body: an absolute path to a WAV; it plays over the music at once.
+      harbor.http.register(port=control_port, method="POST", "/control/voice", fun (req, response) -> begin
+        path = string.trim(req.body())
+        if path == "" or string.sub(path, start=0, length=1) != "/" then
+          reply_error(response, 400, "body must be an absolute path")
+        elsif not file.exists(path) then
+          reply_error(response, 404, "no such file: #{path}")
+        else
+          voice.push(request.create(path))
+          response.json({pushed = path})
+        end
+      end)
+
       # POST /control/skip
       harbor.http.register(port=control_port, method="POST", "/control/skip", fun (_, response) -> begin
         music.skip()
@@ -193,6 +220,7 @@ configs:
       # POST /control/flush: drop everything waiting in the music queue (not the current track).
       harbor.http.register(port=control_port, method="POST", "/control/flush", fun (_, response) -> begin
         music.set_queue([])
+        voice.set_queue([])
         response.json({queued = 0})
       end)
 

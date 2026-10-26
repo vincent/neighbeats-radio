@@ -19,7 +19,7 @@ neighbeats source is in `/home/vincent/Workspace/Perso/neighbeats`.
 | N1 | neighbeats API additions the director needs | done, confirmed on the VPS | [N1](docs/roadmap/N1-neighbeats-api.md) |
 | R2 | Transitions: crossfade, loudness, silence trimming | built, unchecked on a real stream | [R2](docs/roadmap/R2-transitions.md) |
 | R3 | Control CLI: now, next, skip, steer, history | core built, theme/mode/more/ban todo | [R3](docs/roadmap/R3-control.md) |
-| R4 | Spoken announcements (Piper TTS, templates, ducking) | todo | [R4](docs/roadmap/R4-announcements.md) |
+| R4 | Spoken announcements (Piper TTS, templates, ducking) | built, unchecked on the stack | [R4](docs/roadmap/R4-announcements.md) |
 | R5 | Feedback: plays and skips reach neighbeats' taste | todo | [R5](docs/roadmap/R5-feedback.md) |
 | R6 | Upkeep: health, silence alarm, packaging | todo | [R6](docs/roadmap/R6-upkeep.md) |
 
@@ -91,7 +91,7 @@ are wanted (see later).
 
 | Question | Where | Default until answered |
 |----------|-------|------------------------|
-| Announcement language: French, English, or both? | R4 | French Piper voice |
+| Announcement language: French, English, or both? | R4 | answered: English (FR later) |
 | Which Jellyfin user's taste steers the station? | R1 | `jellyfin.user` from neighbeats' config |
 | How do radio plays and skips reach neighbeats' taste? | R5 | see R5: Jellyfin playback reports first |
 | Stream bitrate on mobile data | R0 | MP3 192 kbps (one mount) |
