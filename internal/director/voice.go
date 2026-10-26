@@ -81,7 +81,7 @@ func (d *Director) planBreak(ctx context.Context, it plan.Item) {
 		defer close(job.done)
 		file, err := v.Speaker.Render(ctx, text)
 		if err != nil {
-			d.log.Warn("break not rendered, music goes on", "moment", moment, "err", err)
+			d.log.Warn("break not rendered, music goes on", "moment", moment, "text", text, "err", err)
 			return
 		}
 		job.file = file

@@ -151,16 +151,22 @@ func (d *Director) Step(ctx context.Context) {
 		d.voices = map[string]*voiceJob{}
 		d.dirty = true
 		d.lastTrackID = st.TrackID
-		d.trackStarted(ctx, st.Current)
+		d.trackStarted(ctx, st)
 	case st.TrackID > d.lastTrackID:
 		d.lastTrackID = st.TrackID
-		d.trackStarted(ctx, st.Current)
+		d.trackStarted(ctx, st)
 	}
 
-	// The crossfade takes the next request out of the queue a few seconds before the
-	// track change, so one fewer than pushed is normal; two fewer is a lost queue.
-	if st.Queued+1 < d.planner.Pushed() {
-		d.log.Warn("liquidsoap lost queued tracks", "queued", st.Queued, "pushed", d.planner.Pushed())
+	// While one of our tracks plays, the crossfade takes the next request out of the
+	// queue a few seconds before the track change, so one fewer than pushed is normal;
+	// two fewer is a lost queue. Over a fallback track nothing is pending in the
+	// crossfade, so any shortfall is a lost request.
+	slack := 1
+	if d.playID == 0 || d.playing.Reason == "fallback" {
+		slack = 0
+	}
+	if st.Queued+slack < d.planner.Pushed() {
+		d.log.Warn("liquidsoap lost queued tracks", "queued", st.Queued, "pushed", d.planner.Pushed(), "on_air", d.playing.Path)
 		if err := d.lq.Flush(ctx); err != nil {
 			d.log.Warn("flush", "err", err)
 			return
@@ -185,7 +191,8 @@ func (d *Director) Step(ctx context.Context) {
 	}
 }
 
-func (d *Director) trackStarted(ctx context.Context, cur liq.Track) {
+func (d *Director) trackStarted(ctx context.Context, st liq.Status) {
+	cur := st.Current
 	now := d.now()
 	if d.playID != 0 {
 		if err := d.store.EndPlay(ctx, d.playID, state.Finished); err != nil {
@@ -200,6 +207,12 @@ func (d *Director) trackStarted(ctx context.Context, cur liq.Track) {
 	} else {
 		// A fallback track or the ident: not planned by us, still part of history.
 		it = plan.Item{Track: plan.Track{Path: cur.Filename, Artist: cur.Artist, Title: cur.Title, Reason: "fallback"}}
+		// Keep the planner from routing through what the fallback just played.
+		if cur.Filename != "" {
+			d.planner.NotePlayed(cur.Filename, now)
+		}
+		d.log.Warn("fallback on air", "path", cur.Filename, "queued", st.Queued, "pushed", d.planner.Pushed(),
+			"planned", len(d.planner.Items()), "paused", d.paused)
 	}
 	if ours {
 		d.sayBreak(ctx, it.Path)

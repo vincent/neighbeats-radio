@@ -568,3 +568,44 @@ func TestSteerBreakNamesDestination(t *testing.T) {
 		t.Fatalf("texts %v", sp.said())
 	}
 }
+
+// Over a fallback track nothing is pending in the crossfade, so one request missing
+// from Liquidsoap's queue is a lost one, not the normal crossfade pull.
+func TestLostRequestDetectedOverFallback(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	if len(h.lq.queue) != 2 {
+		t.Fatalf("queue %v", h.lq.queue)
+	}
+	h.lq.queue = h.lq.queue[1:] // Liquidsoap drops one request silently
+	h.step()
+	if h.lq.flushes != 1 {
+		t.Fatalf("flushes %d: lost request not noticed", h.lq.flushes)
+	}
+	if len(h.lq.queue) != 2 {
+		t.Fatalf("queue %v", h.lq.queue)
+	}
+}
+
+// What the fallback played counts for the repeat filter.
+func TestFallbackPlayNotedForRepeatFilter(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	h.lq.queue = nil
+	h.lq.advance() // ident starts; /fallback/ident.mp3 is a fallback track
+	h.lq.current = "/fallback/moby.mp3"
+	h.step()
+	for i := 0; i < 12; i++ { // play on until the planner routes a new leg
+		h.lq.advance()
+		h.step()
+	}
+	found := false
+	for _, e := range h.r.lastExclude {
+		if e == "/fallback/moby.mp3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("exclude %v lacks the fallback track", h.r.lastExclude)
+	}
+}
