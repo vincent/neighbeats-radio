@@ -140,12 +140,36 @@ configs:
       track_id = ref(0)
       current = ref([("filename", ""), ("artist", ""), ("title", "")])
 
+      # Cover art: a picture file next to the track, unless the file carries its own.
+      # Too big a picture is skipped, it is re-sent with the metadata.
+      cover_names = [
+        ("folder.jpg", "image/jpeg"), ("cover.jpg", "image/jpeg"), ("front.jpg", "image/jpeg"),
+        ("folder.png", "image/png"), ("cover.png", "image/png")
+      ]
+      cover_max_bytes = 150000
+      cover = ref([])
+      resend = ref(0)
+
+      def find_cover(filename)
+        dir = path.dirname(filename)
+        hits = list.filter(fun (c) -> file.exists("#{dir}/#{fst(c)}"), cover_names)
+        if hits == [] then
+          []
+        else
+          hit = list.hd(hits)
+          data = file.contents("#{dir}/#{fst(hit)}")
+          if string.length(data) > cover_max_bytes then [] else [("coverart", data), ("coverart_mime", snd(hit))] end
+        end
+      end
+
       on_air.on_track(synchronous=false, fun (m) -> begin
         track_id := track_id() + 1
         filename = m["filename"]
         artist = m["artist"]
         title = m["title"]
         current := [("filename", filename), ("artist", artist), ("title", title)]
+        cover := if m["coverart"] != "" or filename == "" then [] else find_cover(filename) end
+        resend := 5 # the next tick sends the new cover
         log("track #{track_id()}: #{artist} - #{title} (#{filename})")
       end)
 
@@ -161,13 +185,15 @@ configs:
 
       # Metadata only enters the chain at a track start, so a listener who joins later
       # gets no title. Re-send the current one every 10 s, after the mix so a voice
-      # break cannot drop it.
+      # break cannot drop it. The cover is heavier, so it goes out every sixth time (1 min).
       radio = insert_metadata(radio)
       thread.run(every=10., fun () -> begin
         artist = list.assoc(default="", "artist", current())
         title = list.assoc(default="", "title", current())
+        resend := (resend() + 1) mod 6
         if artist != "" and title != "" then
-          radio.insert_metadata([("artist", artist), ("title", title)])
+          extra = if resend() == 0 then cover() else [] end
+          radio.insert_metadata(list.append([("artist", artist), ("title", title)], extra))
         end
       end)
 
@@ -241,4 +267,4 @@ configs:
 
       # --- output ------------------------------------------------------------------
 
-      output.harbor(id="stream", %mp3(bitrate=192), mount="live.mp3", port=8000, radio)
+      output.harbor(id="stream", %mp3(bitrate=192, id3v2=true), mount="live.mp3", port=8000, radio)
