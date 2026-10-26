@@ -24,8 +24,10 @@ func TestBreaksEveryNTracksNeverTwiceInARow(t *testing.T) {
 		}
 	}
 	b = newBreaks(BreakConfig{EveryMin: 1, EveryMax: 1})
-	if b.Decide(Event{Now: noon}) != speak.Between || b.Decide(Event{Now: noon}) != "" || b.Decide(Event{Now: noon}) != speak.Between {
-		t.Fatal("every track: want a break, a gap, a break")
+	for i := 0; i < 3; i++ {
+		if m := b.Decide(Event{Now: noon}); m != speak.Between {
+			t.Fatalf("every track: track %d got %q", i, m)
+		}
 	}
 }
 

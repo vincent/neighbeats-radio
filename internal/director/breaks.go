@@ -51,7 +51,8 @@ func NewBreaks(cfg BreakConfig, rnd func(n int) int) *Breaks {
 func (b *Breaks) draw() int { return b.cfg.EveryMin + b.rand(b.cfg.EveryMax-b.cfg.EveryMin+1) }
 
 // Decide is called once per track pushed. It returns the moment to speak about, or
-// "". Never two breaks in a row, except a steer: the listener asked for it.
+// "". Never two breaks in a row, except a steer: the listener asked for it. With
+// EveryMin 1 the station is asked to talk after every track, so that rule is off.
 func (b *Breaks) Decide(ev Event) string {
 	b.since++
 	if !b.hourSeen {
@@ -62,7 +63,7 @@ func (b *Breaks) Decide(ev Event) string {
 	switch {
 	case ev.Steer && b.cfg.OnSteer:
 		moment = speak.Steer
-	case b.lastWasBreak:
+	case b.lastWasBreak && b.cfg.EveryMin > 1:
 	case b.cfg.HourMark && ev.Now.Hour() != b.lastHour:
 		moment = speak.Hour
 	case ev.LegStart && b.cfg.OnLeg:
