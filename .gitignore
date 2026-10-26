@@ -1,0 +1,7 @@
+/neighbeats-radio
+/.env
+/config.yaml
+/data/
+/run/
+/spool/
+/fallback/

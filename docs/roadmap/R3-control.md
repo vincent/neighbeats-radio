@@ -1,0 +1,38 @@
+# R3: Control CLI
+
+Goal: drive the station from a terminal (or an SSH shortcut on the phone) without a web UI.
+
+## Design
+
+`neighbeats-radio run` serves a small HTTP + JSON API on a Unix socket (`./run/neighbeats-radio.sock`), the
+same pattern as `neighbeats serve`. Every other command is a client of it, so the CLI works
+from the host or via `docker compose exec neighbeats-radio neighbeats-radio ...`.
+
+| Command | Does |
+|---------|------|
+| `now` | playing track, its reason and cosine, time left, next 3 |
+| `queue` | the planned tail, with legs and destinations |
+| `history [-n 30]` | recent plays with outcome (played/skipped) and reason |
+| `skip` | skip now; records a skip (feeds R5); the next pushed track starts |
+| `steer "text"` or `steer -path P` | make this the next destination; replans from the last *pushed* track, drops the rest of the plan |
+| `theme "sea, night"` / `theme off` | pass `theme` on every leg until turned off |
+| `mode comfort\|explore\|rediscover` | change taste mode from the next leg |
+| `more` | "more like this": next leg uses `/v1/similar` from the playing track |
+| `ban artist X` | adds to `avoid_artists` permanently (config or SQLite) |
+| `pause` / `resume` | station plays the fallback/ident instead of planned music |
+
+Replanning never touches the playing track or the one already pushed, so a steer is
+heard within one track.
+
+## Tasks
+
+- [ ] Socket API in `run`; client commands above.
+- [ ] Replan logic in `internal/plan` with tests (steer mid-leg, steer while neighbeats is down,
+      `found: false` on a steer → say so, keep the old plan).
+- [ ] Liquidsoap metadata: set `title`/`artist` on the stream (ICY) so the player shows them.
+- [ ] Optional: a ntfy/Gotify notification with now-playing, for the phone without a terminal.
+
+## Exit criteria
+
+- Roadmap success test 3.
+- Every command answers in under a second while a leg is being planned.

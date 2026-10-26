@@ -1,0 +1,25 @@
+# Copy to config.yaml. Unknown keys are rejected. Every key shown is optional;
+# the values below are the defaults.
+liquidsoap:
+  control_url: http://liquidsoap:8005   # internal harbor, never behind Traefik
+  timeout: 5s
+
+neighbeats:
+  socket: /run/neighbeats/neighbeats.sock
+  user: ""                              # Jellyfin user whose taste steers; empty = neighbeats' jellyfin.user
+  timeout: 30s
+
+director:
+  mode: comfort          # comfort | explore | rediscover | none
+  leg_min: 8             # tracks per leg, drawn between min and max
+  leg_max: 15
+  max_minutes: 10        # leave out tracks longer than this
+  look_ahead: 20m        # keep this much planned
+  repeat_window: 8h      # no recording twice inside this window
+  poll_interval: 2s
+  assumed_track: 4m      # used until neighbeats reports durations (N1)
+  push_when_below: 2     # items Liquidsoap holds
+  # Destinations until neighbeats has /v1/pick (N1). Paths as Jellyfin sees them.
+  seed_paths: []
+
+data: /data              # holds neighbeats-radio.sqlite
