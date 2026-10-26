@@ -29,10 +29,10 @@ Nothing chooses music yet.
       mount neighbeats' `./run` read-write for the socket; `read_only: true` and a user like neighbeats.
 - [~] `radio.liq` written (C2), NOT yet run: the Docker daemon here cannot pull `savonet/liquidsoap` (no DNS). Check the 2.4 calls (`music.queue()`, `music.set_queue`, `request.body()`) on first run. As above, with `ident_loop` = one short generated tone or ident, so the
       chain is never empty.
-- [ ] `internal/liq`: Go client for the control endpoints (status, push, skip, flush), with a
+- [x] `internal/liq`: Go client for the control endpoints (status, push, skip, flush), with a
       fake HTTP server in tests.
-- [ ] `neighbeats-radio push <path>` and `neighbeats-radio skip`: thin commands over `internal/liq`, to test by hand.
-- [~] Traefik labels + basic auth written in `compose.yaml`; document the stream URL form for players.
+- [x] `neighbeats-radio push <path>` and `neighbeats-radio skip`: thin commands over `internal/liq`, to test by hand.
+- [x] Traefik labels + basic auth in `compose.yaml`; stream URL form documented in README (player behaviour still untested).
 - [ ] Check Liquidsoap resolves a path with accents, spaces and `#` in it (push one of each).
 
 ## Exit criteria

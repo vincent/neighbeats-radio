@@ -1,0 +1,91 @@
+package liq
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/control/status" {
+			t.Errorf("got %s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `{"track_id":7,"queued":1,"current":{"filename":"/m/a.mp3","artist":"A","title":"T"}}`)
+	}))
+	defer srv.Close()
+	s, err := New(srv.URL+"/", time.Second).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.TrackID != 7 || s.Queued != 1 || s.Current.Artist != "A" || s.Current.Filename != "/m/a.mp3" {
+		t.Fatalf("got %+v", s)
+	}
+}
+
+func TestPushSendsRawPath(t *testing.T) {
+	const path = "/media/music/Café déjà vu/track #4 (live).mp3"
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		if r.Method != "POST" || r.URL.Path != "/control/push" {
+			t.Errorf("got %s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `{"pushed":"x","queued":2}`)
+	}))
+	defer srv.Close()
+	n, err := New(srv.URL, time.Second).Push(context.Background(), path)
+	if err != nil || n != 2 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if got != path {
+		t.Fatalf("body %q", got)
+	}
+}
+
+func TestSkipAndFlush(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	c := New(srv.URL, time.Second)
+	if err := c.Skip(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(paths, ",") != "POST /control/skip,POST /control/flush" {
+		t.Fatalf("got %v", paths)
+	}
+}
+
+func TestErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/control/push" {
+			w.WriteHeader(404)
+			io.WriteString(w, `{"error":"no such file: /x"}`)
+			return
+		}
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	c := New(srv.URL, time.Second)
+	if _, err := c.Push(context.Background(), "/x"); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := c.Status(context.Background()); err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("got %v", err)
+	}
+	srv.Close()
+	if err := c.Skip(context.Background()); err == nil {
+		t.Fatal("want connection error")
+	}
+}
