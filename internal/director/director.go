@@ -155,6 +155,9 @@ func (d *Director) Step(ctx context.Context) {
 	case st.TrackID > d.lastTrackID:
 		d.lastTrackID = st.TrackID
 		d.trackStarted(ctx, st)
+	case d.playID != 0 && d.playing.Path == "" && st.Current.Filename != "":
+		// The track mark came without metadata; the filename showed up since.
+		d.trackStarted(ctx, st)
 	}
 
 	// The crossfade takes the next request out of the queue a few seconds before the

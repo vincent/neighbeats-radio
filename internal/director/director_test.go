@@ -667,3 +667,18 @@ func TestLostPushReplyIsNotPushedTwiceNorCalledFallback(t *testing.T) {
 		t.Fatalf("history %+v", hist)
 	}
 }
+
+// The track mark can come without metadata; the filename shows up on a later poll.
+func TestLateMetadataMatchesPlannedTrack(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	want := h.lq.queue[0]
+	h.lq.advance()
+	h.lq.current = "" // the mark carried no metadata
+	h.step()
+	h.lq.current = want // metadata arrived, same track id
+	h.step()
+	if now := h.d.Now(); now.Playing.Path != want || now.Playing.Reason == "fallback" {
+		t.Fatalf("now %+v", now.Playing)
+	}
+}

@@ -86,6 +86,20 @@
         log("track #{track_id()}: #{artist} - #{title} (#{filename})")
       end)
 
+      # The metadata can reach the stream just after the track mark, which then carries none:
+      # fill in the track once it shows up (the director notices the new filename).
+      on_air.on_metadata(synchronous=false, fun (m) -> begin
+        filename = m["filename"]
+        artist = m["artist"]
+        title = m["title"]
+        if filename != "" and filename != list.assoc(default="", "filename", current()) then
+          current := [("filename", filename), ("artist", artist), ("title", title)]
+          cover := if m["coverart"] != "" then [] else find_cover(filename) end
+          resend := 5
+          log("late metadata: #{artist} - #{title} (#{filename})")
+        end
+      end)
+
       # --- voice (R4) --------------------------------------------------------------
 
       # Spoken breaks rendered by the director into /spool/voice. Music drops to about a
