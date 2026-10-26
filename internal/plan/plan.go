@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
 )
@@ -85,8 +86,11 @@ type Planner struct {
 	log    *slog.Logger
 	rand   func(n int) int
 
-	items   []Item
-	recent  map[string]time.Time // path -> when it started playing
+	items  []Item
+	recent map[string]time.Time // path -> when it started playing
+	// heard is the same by artist and title: one song under several paths (a copy in
+	// the fallback folder, an album and a compilation) must not repeat either.
+	heard   map[string]time.Time
 	steered *Track
 	nextLeg int
 }
@@ -102,7 +106,7 @@ func New(cfg Config, r Router, p Picker, log *slog.Logger, rnd func(n int) int) 
 	if cfg.MaxAttempts < 1 {
 		cfg.MaxAttempts = 5
 	}
-	return &Planner{cfg: cfg, router: r, picker: p, log: log, rand: rnd, recent: map[string]time.Time{}, nextLeg: 1}
+	return &Planner{cfg: cfg, router: r, picker: p, log: log, rand: rnd, recent: map[string]time.Time{}, heard: map[string]time.Time{}, nextLeg: 1}
 }
 
 // Restore loads a saved queue (a restart resumes the same leg). Items that were
@@ -125,11 +129,50 @@ func (p *Planner) Restore(items []Item) {
 	}
 }
 
-// NotePlayed seeds the repeat filter from stored history.
-func (p *Planner) NotePlayed(path string, at time.Time) {
+// NotePlayed seeds the repeat filter from stored history and from what the
+// fallback played.
+func (p *Planner) NotePlayed(path, artist, title string, at time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.recent[path] = at
+	if k := songKey(artist, title); k != "" {
+		p.heard[k] = at
+	}
+}
+
+// songKey identifies a song across files. Empty when the tags are missing: untagged
+// files are told apart by path only.
+func songKey(artist, title string) string {
+	a, t := strings.ToLower(strings.TrimSpace(artist)), strings.ToLower(strings.TrimSpace(title))
+	if a == "" || t == "" {
+		return ""
+	}
+	return a + "\x00" + t
+}
+
+// wasHeard reports whether the song was played inside the window, or is already in
+// the plan under another path.
+func (p *Planner) wasHeard(t Track, now time.Time, withPlanned bool) bool {
+	k := songKey(t.Artist, t.Title)
+	if k == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if at, ok := p.heard[k]; ok {
+		if now.Sub(at) <= p.cfg.RepeatWindow {
+			return true
+		}
+		delete(p.heard, k)
+	}
+	for _, it := range p.items {
+		if withPlanned || it.State != Planned {
+			if it.Path != t.Path && songKey(it.Artist, it.Title) == k {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Items returns a copy of the queue, oldest first.
@@ -214,6 +257,10 @@ func (p *Planner) planLeg(ctx context.Context, now time.Time) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		if to.Reason != "steered" && p.wasHeard(to, now, true) {
+			p.log.Warn("destination already heard under another path, picking again", "leg", leg, "to", to.Path)
+			continue
+		}
 		if last == nil {
 			to.Reason = "start"
 			p.mu.Lock()
@@ -234,7 +281,7 @@ func (p *Planner) planLeg(ctx context.Context, now time.Time) (int, error) {
 			p.log.Warn("no route", "leg", leg, "attempt", attempt, "from", last.Path, "to", to.Path, "why", r.Why)
 			continue
 		}
-		tracks := p.filter(r.Tracks, last.Track, exclude)
+		tracks := p.filter(r.Tracks, last.Track, exclude, now, true)
 		if len(tracks) == 0 {
 			p.log.Warn("route empty after repeat filter", "leg", leg, "attempt", attempt, "to", to.Path)
 			continue
@@ -283,8 +330,9 @@ func (p *Planner) destination(ctx context.Context, exclude []string) (Track, err
 
 // filter drops the start of the answer (the track we route from), anything played
 // inside the window, anything already queued, and duplicates within the answer.
-func (p *Planner) filter(in []Track, from Track, exclude []string) []Track {
+func (p *Planner) filter(in []Track, from Track, exclude []string, now time.Time, withPlanned bool) []Track {
 	skip := map[string]bool{from.Path: true}
+	songs := map[string]bool{songKey(from.Artist, from.Title): true}
 	for _, e := range exclude {
 		skip[e] = true
 	}
@@ -293,7 +341,12 @@ func (p *Planner) filter(in []Track, from Track, exclude []string) []Track {
 		if skip[t.Path] {
 			continue
 		}
+		k := songKey(t.Artist, t.Title)
+		if k != "" && (songs[k] || p.wasHeard(t, now, withPlanned)) {
+			continue
+		}
 		skip[t.Path] = true
+		songs[k] = true
 		out = append(out, t)
 	}
 	return out
@@ -429,6 +482,9 @@ func (p *Planner) Started(path string, at time.Time) (Item, bool) {
 	}
 	p.items[idx].State = Playing
 	p.recent[path] = at
+	if k := songKey(p.items[idx].Artist, p.items[idx].Title); k != "" {
+		p.heard[k] = at
+	}
 	playing := p.items[idx]
 	p.compact()
 	return playing, true
@@ -524,7 +580,7 @@ func (p *Planner) SteerNow(ctx context.Context, dest Track, now time.Time) (Stee
 		if !r.Found {
 			return SteerResult{Why: r.Why}, nil
 		}
-		tracks = p.filter(r.Tracks, anchor.Track, exclude)
+		tracks = p.filter(r.Tracks, anchor.Track, exclude, now, false)
 		if len(tracks) == 0 {
 			return SteerResult{Why: "every track on the route was played recently"}, nil
 		}

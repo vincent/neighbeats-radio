@@ -137,8 +137,8 @@ func TestRepeatFilterAndExclusions(t *testing.T) {
 	c := cfg()
 	c.LookAhead = 10 * time.Minute
 	p := New(c, r, &fakePicker{paths: []string{"/s", "/d1"}}, nil, func(int) int { return 0 })
-	p.NotePlayed("/old", t0.Add(-time.Hour))
-	p.NotePlayed("/ancient", t0.Add(-9*time.Hour))
+	p.NotePlayed("/old", "", "", t0.Add(-time.Hour))
+	p.NotePlayed("/ancient", "", "", t0.Add(-9*time.Hour))
 	p.Fill(context.Background(), t0)
 	if got := paths(p.Items()); got != "/s /a /d1" {
 		t.Fatalf("got %q", got)
@@ -392,5 +392,22 @@ func TestSkipPlaying(t *testing.T) {
 	}
 	if _, ok := p.SkipPlaying(); ok {
 		t.Fatal("nothing playing now")
+	}
+}
+
+// The same song under another path (a copy in the fallback folder) counts as heard.
+func TestSameSongOtherPathIsNotRepeated(t *testing.T) {
+	r := &fakeRouter{}
+	pk := &fakePicker{paths: []string{"/s", "/dup", "/d2", "/d3", "/d4"}}
+	p := New(cfg(), r, pk, nil, func(int) int { return 0 })
+	// "/dup" is titled "/dup" by the fake picker: say its twin under /fallback was heard.
+	p.NotePlayed("/fallback/x.mp3", "D", "/dup", t0.Add(-time.Minute))
+	if _, err := p.Fill(context.Background(), t0); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range p.Items() {
+		if strings.HasPrefix(it.Path, "/dup") && it.Title == "/dup" {
+			t.Fatalf("heard song planned again: %s", paths(p.Items()))
+		}
 	}
 }

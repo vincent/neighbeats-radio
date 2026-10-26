@@ -109,7 +109,7 @@ func (d *Director) init(ctx context.Context) error {
 		return err
 	}
 	for _, p := range plays {
-		d.planner.NotePlayed(p.Path, p.StartedAt)
+		d.planner.NotePlayed(p.Path, p.Artist, p.Title, p.StartedAt)
 	}
 	items, err := d.store.LoadQueue(ctx)
 	if err != nil {
@@ -209,7 +209,7 @@ func (d *Director) trackStarted(ctx context.Context, st liq.Status) {
 		it = plan.Item{Track: plan.Track{Path: cur.Filename, Artist: cur.Artist, Title: cur.Title, Reason: "fallback"}}
 		// Keep the planner from routing through what the fallback just played.
 		if cur.Filename != "" {
-			d.planner.NotePlayed(cur.Filename, now)
+			d.planner.NotePlayed(cur.Filename, cur.Artist, cur.Title, now)
 		}
 		d.log.Warn("fallback on air", "path", cur.Filename, "queued", st.Queued, "pushed", d.planner.Pushed(),
 			"planned", len(d.planner.Items()), "paused", d.paused)
