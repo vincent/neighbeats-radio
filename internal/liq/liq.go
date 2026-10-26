@@ -26,6 +26,20 @@ type Status struct {
 	Current Track `json:"current"`
 }
 
+// Error is a non-200 answer. Code 404 on push means the file does not exist.
+type Error struct {
+	Path string
+	Code int
+	Msg  string
+}
+
+func (e *Error) Error() string {
+	if e.Msg != "" {
+		return fmt.Sprintf("liquidsoap %s: %d: %s", e.Path, e.Code, e.Msg)
+	}
+	return fmt.Sprintf("liquidsoap %s: %d", e.Path, e.Code)
+}
+
 type Client struct {
 	base string
 	http *http.Client
@@ -79,10 +93,8 @@ func (c *Client) do(ctx context.Context, method, path, body string, out any) err
 		var e struct {
 			Error string `json:"error"`
 		}
-		if json.Unmarshal(raw, &e) == nil && e.Error != "" {
-			return fmt.Errorf("liquidsoap %s: %d: %s", path, resp.StatusCode, e.Error)
-		}
-		return fmt.Errorf("liquidsoap %s: %d", path, resp.StatusCode)
+		json.Unmarshal(raw, &e)
+		return &Error{Path: path, Code: resp.StatusCode, Msg: e.Error}
 	}
 	if out == nil {
 		return nil

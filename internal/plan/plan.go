@@ -311,6 +311,26 @@ func (p *Planner) Requeue() {
 	}
 }
 
+// Unpush puts a pushed item back to planned, for a push that did not reach Liquidsoap.
+func (p *Planner) Unpush(path string) {
+	for i := range p.items {
+		if p.items[i].State == Pushed && p.items[i].Path == path {
+			p.items[i].State = Planned
+			return
+		}
+	}
+}
+
+// Reject drops a pushed item Liquidsoap refused for good (file missing).
+func (p *Planner) Reject(path string) {
+	for i := range p.items {
+		if p.items[i].State == Pushed && p.items[i].Path == path {
+			p.items[i].State = Skipped
+		}
+	}
+	p.compact()
+}
+
 // Started records that path began playing. The previous track becomes played,
 // pushed items ahead of it in the queue are marked skipped. It returns the item
 // now playing, or false when the path is not one the planner pushed (a fallback

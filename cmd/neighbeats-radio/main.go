@@ -5,12 +5,19 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/vincent/neighbeats-radio/internal/config"
+	"github.com/vincent/neighbeats-radio/internal/director"
 	"github.com/vincent/neighbeats-radio/internal/liq"
+	"github.com/vincent/neighbeats-radio/internal/neighbeats"
+	"github.com/vincent/neighbeats-radio/internal/plan"
+	"github.com/vincent/neighbeats-radio/internal/state"
 )
 
 var version = "dev"
@@ -65,6 +72,10 @@ func run(ctx context.Context, args []string) error {
 	lq := liq.New(cfg.Liquidsoap.ControlURL, cfg.Liquidsoap.Timeout)
 
 	switch cmd {
+	case "run":
+		return runDirector(ctx, cfg, lq)
+	case "queue":
+		return printQueue(ctx, cfg)
 	case "push":
 		if len(rest) != 1 {
 			return fmt.Errorf("push: want exactly one PATH")
@@ -86,4 +97,60 @@ func run(ctx context.Context, args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown command %q\n\n%s", cmd, usage)
+}
+
+func dbPath(cfg config.Config) string { return filepath.Join(cfg.Data, "neighbeats-radio.sqlite") }
+
+func runDirector(ctx context.Context, cfg config.Config, lq *liq.Client) error {
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	db, err := state.Open(dbPath(cfg))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	d := cfg.Director
+	router := director.NeighbeatsRouter{
+		Client: neighbeats.New(cfg.Neighbeats.Socket, cfg.Neighbeats.Timeout),
+		Mode:   d.Mode, User: cfg.Neighbeats.User, MaxMinutes: d.MaxMinutes,
+	}
+	pl := plan.New(plan.Config{
+		LegMin: d.LegMin, LegMax: d.LegMax, LookAhead: d.LookAhead,
+		RepeatWindow: d.RepeatWindow, AssumedTrack: d.AssumedTrack,
+	}, router, director.SeedPicker{Paths: d.SeedPaths}, log, nil)
+
+	dir := director.New(director.Config{
+		PollInterval: d.PollInterval, PushWhenBelow: d.PushWhenBelow, RepeatWindow: d.RepeatWindow,
+	}, lq, pl, db, log)
+	log.Info("director started", "version", version, "liquidsoap", cfg.Liquidsoap.ControlURL, "neighbeats", cfg.Neighbeats.Socket)
+	return dir.Run(ctx)
+}
+
+// printQueue shows the stored plan. It reads the director's SQLite file, so it
+// works while the director runs (WAL) or after it stopped.
+func printQueue(ctx context.Context, cfg config.Config) error {
+	db, err := state.Open(dbPath(cfg))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	items, err := db.LoadQueue(ctx)
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		fmt.Println("queue is empty")
+		return nil
+	}
+	var ahead time.Duration
+	for _, it := range items {
+		dur := it.Duration
+		if dur == 0 {
+			dur = cfg.Director.AssumedTrack
+		}
+		ahead += dur
+		fmt.Printf("%-8s leg %-3d %s - %s  [%s]\n", it.State, it.Leg, it.Artist, it.Title, it.Reason)
+	}
+	fmt.Printf("%d tracks, about %s ahead\n", len(items), ahead.Round(time.Minute))
+	return nil
 }

@@ -13,6 +13,18 @@ make build  # ./neighbeats-radio
 
 Configuration: `cp config.example.yaml config.yaml`, `cp .env.example .env`.
 
+## Commands
+
+| Command | Does |
+|---------|------|
+| `run` | the director: keeps Liquidsoap's queue full from neighbeats routes |
+| `queue` | prints the planned queue (reads the director's SQLite file) |
+| `status` | what Liquidsoap is playing |
+| `push PATH`, `skip` | by hand, for testing |
+
+Until neighbeats has `/v1/pick` (N1), set `director.seed_paths` in `config.yaml`: paths, as
+Jellyfin sees them, the station may route toward.
+
 ## Listening
 
 Stream: `https://HOST/live.mp3`, MP3 192 kbps, behind Traefik with basic auth.

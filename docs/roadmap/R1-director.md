@@ -39,11 +39,11 @@ destination; when the route is nearly used up, pick a new destination and route 
       (`Route(from, to, n)`, `Pick()`), tested with a fake router: leg chaining, repeat filter,
       look-ahead, behaviour when no route is found (`found: false` → new destination, logged).
 - [x] `internal/state`: SQLite schema + migrations for `plays` and `queue`.
-- [ ] Director loop: poll `/control/status` every 2 s; push when low; plan a leg when look-ahead
+- [x] Director loop: poll `/control/status` every 2 s; push when low; plan a leg when look-ahead
       drops below the threshold. Detect track change from Liquidsoap metadata (on_track) and
       mark `playing` / `played`.
-- [ ] `neighbeats-radio run` (the long-running command) and `neighbeats-radio queue` (print the plan).
-- [ ] Logs: one line per track start with artist, title, cosine, reason, leg.
+- [x] `neighbeats-radio run` (the long-running command) and `neighbeats-radio queue` (print the plan).
+- [x] Logs: one line per track start with artist, title, cosine, reason, leg.
 
 ## Exit criteria
 
@@ -51,3 +51,18 @@ destination; when the route is nearly used up, pick a new destination and route 
 - `history` of a full day shows no repeat inside 8 hours and the reason of every track.
 - Note: average hop cosine across leg boundaries vs inside legs (the seam between two legs
   is the risky hop: the new leg starts from the last queued track, so it should be fine).
+
+## Status notes
+
+Built and unit tested (fake Liquidsoap and neighbeats), and smoke-tested as a binary against
+fake HTTP servers. Not yet run against real Liquidsoap or neighbeats.
+
+- Until N1: destinations come from `director.seed_paths` (required), no `exclude` is sent
+  (the planner filters repeats on the answer), durations default to `director.assumed_track`.
+- Assumption to verify on first real run: `queued` in `/control/status` counts requests
+  waiting behind the track playing, not the playing one.
+- Restart: the director flushes Liquidsoap's queue once at start (it cannot know what is
+  in it), then re-pushes from the stored plan; the playing track is left alone.
+- A route that finds nothing (`found: false`) is logged with its `why` and another
+  destination is tried (5 times), then the station jumps to the destination (`reason=fallback`).
+- Skips are not told apart from finished tracks yet (outcome is `finished`); R3 adds that.
