@@ -29,8 +29,11 @@ current = ref([("filename", ""), ("artist", ""), ("title", "")])
 
 radio.on_track(fun (m) -> begin
   track_id := !track_id + 1
-  current := [("filename", m["filename"]), ("artist", m["artist"]), ("title", m["title"])]
-  log("track #{!track_id}: #{m["artist"]} - #{m["title"]} (#{m["filename"]})")
+  filename = m["filename"]
+  artist = m["artist"]
+  title = m["title"]
+  current := [("filename", filename), ("artist", artist), ("title", title)]
+  log("track #{!track_id}: #{artist} - #{title} (#{filename})")
 end)
 
 # --- control API -------------------------------------------------------------
