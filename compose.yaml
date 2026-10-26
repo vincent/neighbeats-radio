@@ -26,7 +26,6 @@ services:
         target: /etc/liquidsoap/radio.liq
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
-    read_only: true
     tmpfs:
       - /tmp
     environment:
@@ -114,13 +113,13 @@ configs:
       track_id = ref(0)
       current = ref([("filename", ""), ("artist", ""), ("title", "")])
 
-      radio.on_track(fun (m) -> begin
-        track_id := !track_id + 1
+      radio.on_track(synchronous=false, fun (m) -> begin
+        track_id := track_id() + 1
         filename = m["filename"]
         artist = m["artist"]
         title = m["title"]
         current := [("filename", filename), ("artist", artist), ("title", title)]
-        log("track #{!track_id}: #{artist} - #{title} (#{filename})")
+        log("track #{track_id()}: #{artist} - #{title} (#{filename})")
       end)
 
       # --- control API -------------------------------------------------------------
@@ -136,12 +135,12 @@ configs:
       # "queued" counts requests waiting behind the one playing.
       harbor.http.register(port=control_port, method="GET", "/control/status", fun (_, response) -> begin
         response.json({
-          track_id = !track_id,
+          track_id = track_id(),
           queued = list.length(music.queue()),
           current = {
-            filename = list.assoc(default="", "filename", !current),
-            artist = list.assoc(default="", "artist", !current),
-            title = list.assoc(default="", "title", !current)
+            filename = list.assoc(default="", "filename", current()),
+            artist = list.assoc(default="", "artist", current()),
+            title = list.assoc(default="", "title", current())
           }
         })
       end)
