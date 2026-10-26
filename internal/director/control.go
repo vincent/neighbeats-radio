@@ -114,7 +114,7 @@ func (d *Director) Pause(ctx context.Context) error {
 	if err := d.lq.Flush(ctx); err != nil {
 		return err
 	}
-	d.planner.Requeue()
+	d.planner.Requeue(0)
 	d.voices = map[string]*voiceJob{}
 	if err := d.skip(ctx); err != nil {
 		return err

@@ -420,14 +420,21 @@ func (p *Planner) Pushed() int {
 }
 
 // Requeue turns pushed items back into planned ones, for when Liquidsoap lost its
-// queue (restart, flush).
-func (p *Planner) Requeue() {
+// queue (restart, flush). The first keep pushed items stay pushed: the crossfade
+// takes the next request out of the queue before its track starts, so a flush does
+// not drop it, and pushing it again would play it twice.
+func (p *Planner) Requeue(keep int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for i := range p.items {
-		if p.items[i].State == Pushed {
-			p.items[i].State = Planned
+		if p.items[i].State != Pushed {
+			continue
 		}
+		if keep > 0 {
+			keep--
+			continue
+		}
+		p.items[i].State = Planned
 	}
 }
 

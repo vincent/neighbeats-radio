@@ -147,7 +147,7 @@ func (d *Director) Step(ctx context.Context) {
 	case st.TrackID < d.lastTrackID:
 		// Liquidsoap restarted: its queue is gone, ours must be pushed again.
 		d.log.Warn("liquidsoap restarted", "was", d.lastTrackID, "now", st.TrackID)
-		d.planner.Requeue()
+		d.planner.Requeue(0)
 		d.voices = map[string]*voiceJob{}
 		d.dirty = true
 		d.lastTrackID = st.TrackID
@@ -157,21 +157,19 @@ func (d *Director) Step(ctx context.Context) {
 		d.trackStarted(ctx, st)
 	}
 
-	// While one of our tracks plays, the crossfade takes the next request out of the
-	// queue a few seconds before the track change, so one fewer than pushed is normal;
-	// two fewer is a lost queue. Over a fallback track nothing is pending in the
-	// crossfade, so any shortfall is a lost request.
-	slack := 1
-	if d.playID == 0 || d.playing.Reason == "fallback" {
-		slack = 0
-	}
+	// The crossfade takes the next request out of the queue a few seconds before the
+	// track change, whatever is on air, so one fewer than pushed is normal; two fewer
+	// is a lost queue. That request is not in the queue to be flushed either: it stays
+	// pushed, or it would play twice.
+	const slack = 1
 	if st.Queued+slack < d.planner.Pushed() {
-		d.log.Warn("liquidsoap lost queued tracks", "queued", st.Queued, "pushed", d.planner.Pushed(), "on_air", d.playing.Path)
+		d.log.Warn("liquidsoap lost queued tracks", "queued", st.Queued, "pushed", d.planner.Pushed(), "slack", slack,
+			"track_id", st.TrackID, "on_air", d.playing.Path)
 		if err := d.lq.Flush(ctx); err != nil {
 			d.log.Warn("flush", "err", err)
 			return
 		}
-		d.planner.Requeue()
+		d.planner.Requeue(1)
 		d.voices = map[string]*voiceJob{}
 		st.Queued = 0
 		d.dirty = true
@@ -261,6 +259,13 @@ func (d *Director) push(ctx context.Context, queued int) {
 	}
 	items := d.planner.TakeForPush(want)
 	for i, it := range items {
+		if it.Path == d.playing.Path {
+			// Never queue what is on air: it would play twice in a row.
+			d.log.Warn("not pushing the track on air", "path", it.Path)
+			d.planner.Reject(it.Path)
+			d.dirty = true
+			continue
+		}
 		_, err := d.lq.Push(ctx, it.Path, d.fadeMeta(it))
 		var le *liq.Error
 		switch {

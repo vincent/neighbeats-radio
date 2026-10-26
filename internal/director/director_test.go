@@ -182,7 +182,7 @@ func TestFallbackTrackIsHistoryNotPlan(t *testing.T) {
 	h := newHarness(t, nil, lq)
 	h.step()
 	lq.queue = nil // the queue ran dry
-	h.pl.Requeue()
+	h.pl.Requeue(0)
 	lq.advance()
 	h.step()
 	hist, _ := h.st.History(ctx, 10)
@@ -507,7 +507,7 @@ func TestBreakDroppedWhenItsTrackIsSkippedOver(t *testing.T) {
 	h.step()
 	// dest001 is skipped past: whatever starts next is not t001, so t001's break must go.
 	h.lq.queue = nil
-	h.d.planner.Requeue()
+	h.d.planner.Requeue(0)
 	h.lq.advance() // fallback ident starts
 	h.step()
 	if len(h.lq.voices) != 0 {
@@ -573,21 +573,53 @@ func TestSteerBreakNamesDestination(t *testing.T) {
 	}
 }
 
-// Over a fallback track nothing is pending in the crossfade, so one request missing
-// from Liquidsoap's queue is a lost one, not the normal crossfade pull.
-func TestLostRequestDetectedOverFallback(t *testing.T) {
+// Two requests missing from Liquidsoap's queue are lost ones: one fewer than pushed
+// is only the crossfade holding the next request.
+func TestLostRequestsDetected(t *testing.T) {
 	h := newHarness(t, nil, nil)
 	h.step()
 	if len(h.lq.queue) != 2 {
 		t.Fatalf("queue %v", h.lq.queue)
 	}
-	h.lq.queue = h.lq.queue[1:] // Liquidsoap drops one request silently
+	held := h.lq.pushes[0]
+	h.lq.queue = nil // Liquidsoap lost both
 	h.step()
 	if h.lq.flushes != 1 {
-		t.Fatalf("flushes %d: lost request not noticed", h.lq.flushes)
+		t.Fatalf("flushes %d: lost requests not noticed", h.lq.flushes)
 	}
-	if len(h.lq.queue) != 2 {
-		t.Fatalf("queue %v", h.lq.queue)
+	// The first may be held by the crossfade: it is not pushed again.
+	n := 0
+	for _, p := range h.lq.pushes {
+		if p == held {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%s pushed %d times: %v", held, n, h.lq.pushes)
+	}
+}
+
+// The crossfade holds the next request, so the queue is one short of pushed. Over a
+// track the planner does not know (a repeat) that must not flush and re-push it.
+func TestHeldRequestIsNotLostOverUnknownTrack(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	h.lq.advance() // dest001 starts
+	h.step()
+	h.lq.current = "/fallback/other.mp3"
+	h.lq.trackID++
+	h.lq.queue = h.lq.queue[1:] // the crossfade pulled the next request
+	h.step()
+	h.step()
+	if h.lq.flushes != 0 {
+		t.Fatalf("flushes %d", h.lq.flushes)
+	}
+	seen := map[string]int{}
+	for _, p := range h.lq.pushes {
+		seen[p]++
+		if seen[p] > 1 {
+			t.Fatalf("%s pushed twice: %v", p, h.lq.pushes)
+		}
 	}
 }
 

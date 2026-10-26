@@ -255,7 +255,7 @@ func TestRequeueAndRestore(t *testing.T) {
 	p := New(cfg(), &fakeRouter{}, &fakePicker{paths: []string{"/s", "/d1"}}, nil, func(int) int { return 0 })
 	p.Fill(context.Background(), t0)
 	p.TakeForPush(2)
-	p.Requeue()
+	p.Requeue(0)
 	if p.Pushed() != 0 {
 		t.Fatal("requeue left pushed items")
 	}
@@ -419,5 +419,18 @@ func TestStartedMatchesPlannedItem(t *testing.T) {
 	it, ok := p.Started(head, t0)
 	if !ok || it.State != Playing {
 		t.Fatalf("%+v %v", it, ok)
+	}
+}
+
+func TestRequeueKeepsFirstPushed(t *testing.T) {
+	p := New(cfg(), &fakeRouter{}, &fakePicker{paths: []string{"/s", "/d1"}}, nil, func(int) int { return 0 })
+	p.Fill(context.Background(), t0)
+	p.TakeForPush(2)
+	p.Requeue(1)
+	if p.Pushed() != 1 {
+		t.Fatalf("pushed %d, want 1", p.Pushed())
+	}
+	if it := p.Items(); it[0].State != Pushed || it[1].State != Planned {
+		t.Fatalf("items %+v", it)
 	}
 }
