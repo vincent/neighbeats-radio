@@ -138,3 +138,23 @@ func (s SeedPicker) Pick(_ context.Context, exclude []string) (plan.Track, error
 	p := free[rnd(len(free))]
 	return plan.Track{Path: p, Reason: "seed"}, nil
 }
+
+// NeighbeatsResolver adapts /v1/search to the control socket's steer command.
+type NeighbeatsResolver struct{ Client *neighbeats.Client }
+
+// Resolve returns the analysed tracks matching query. No match is an empty result,
+// not an error.
+func (r NeighbeatsResolver) Resolve(ctx context.Context, query string) ([]plan.Track, bool, error) {
+	res, err := r.Client.Search(ctx, query, 8)
+	if errors.Is(err, neighbeats.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]plan.Track, len(res.Tracks))
+	for i, t := range res.Tracks {
+		out[i] = fromAPI(t)
+	}
+	return out, res.Ambiguous, nil
+}

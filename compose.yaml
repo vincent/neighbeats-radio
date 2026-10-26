@@ -2,7 +2,7 @@
 #
 # One-time setup:
 #   cp .env.example .env && cp config.example.yaml config.yaml    # then edit both
-#   mkdir -p data spool fallback                                  # fallback: a few known-good tracks
+#   mkdir -p data spool run fallback                                  # fallback: a few known-good tracks
 #   docker compose up -d
 # On a VPS only compose.yaml, .env, config.yaml and those folders are needed: the director
 # image comes from ghcr and radio.liq is embedded below (top-level `configs`, Compose >= 2.23.1).
@@ -61,7 +61,9 @@ services:
     restart: unless-stopped
     depends_on:
       - liquidsoap
-    command: ["-config", "/config/config.yaml", "run"]
+    command: ["run"]
+    environment:
+      NEIGHBEATS_RADIO_CONFIG: /config/config.yaml
     user: "${PUID:-1000}:${PGID:-1000}"
     read_only: true
     tmpfs:
@@ -70,6 +72,9 @@ services:
       - ./config.yaml:/config/config.yaml:ro
       - ./data:/data
       - ./spool:/spool
+      # Command socket (`docker compose exec neighbeats-radio /neighbeats-radio now`, or
+      # from the host with control.socket pointed at ./run/neighbeats-radio.sock).
+      - ./run:/run/neighbeats-radio
       # neighbeats' run folder holds neighbeats.sock (its group must be ours, mode 0660).
       - ${NEIGHBEATS_RUN:-../neighbeats/run}:/run/neighbeats
     networks:
@@ -101,13 +106,30 @@ configs:
       # Jellyfin uses, so neighbeats' answers are playable as they come.
       music = request.queue(id="music")
 
+      # --- transitions (R2) --------------------------------------------------------
+
+      # Trim silence at the head and tail of tracks.
+      music_trimmed = blank.eat(threshold=-50., music)
+
+      # ReplayGain tags where present; untagged files play as they are.
+      enable_replaygain_metadata()
+      music_leveled = replaygain(music_trimmed)
+
+      # Crossfade on music only. The director sets liq_cross_duration (with liq_fade_out
+      # and liq_fade_in) on a track when it is pushed, from the hop that follows it:
+      # a close hop blends long, a distant one gets a short fade. 5 s when unset.
+      music_x = crossfade(duration=5., fade_in=3., fade_out=3., music_leveled)
+
       # Known-good tracks, used only when the music queue is empty.
       safe = playlist(mode="randomize", reload_mode="watch", "/fallback")
 
       # Last resort so the chain is never empty: a quiet tone.
       ident_loop = amplify(0.05, sine(440.))
 
-      radio = fallback(track_sensitive=false, [music, safe, ident_loop])
+      radio = fallback(track_sensitive=false, [music_x, safe, ident_loop])
+
+      # Safety net against clipping from tracks of very different level.
+      radio = limit(radio)
 
       # --- what is playing ---------------------------------------------------------
 
@@ -146,7 +168,8 @@ configs:
         })
       end)
 
-      # POST /control/push   body: an absolute path (raw text, no quoting)
+      # POST /control/push[?liq_cross_duration=6.5&...]   body: an absolute path (raw text, no quoting)
+      # Query keys starting with "liq_" become request metadata (crossfade length, fades).
       harbor.http.register(port=control_port, method="POST", "/control/push", fun (req, response) -> begin
         path = string.trim(req.body())
         if path == "" or string.sub(path, start=0, length=1) != "/" then
@@ -154,7 +177,8 @@ configs:
         elsif not file.exists(path) then
           reply_error(response, 404, "no such file: #{path}")
         else
-          music.push(request.create(path))
+          meta = list.filter(fun (kv) -> string.sub(fst(kv), start=0, length=4) == "liq_", req.query)
+          music.push(request.create(metadata=meta, path))
           response.json({pushed = path, queued = list.length(music.queue())})
         end
       end)

@@ -24,7 +24,9 @@ type fakeLiq struct {
 	missing map[string]bool
 	down    error
 	pushes  []string
+	metas   []map[string]string
 	flushes int
+	skips   int
 }
 
 func (f *fakeLiq) Status(context.Context) (liq.Status, error) {
@@ -34,16 +36,19 @@ func (f *fakeLiq) Status(context.Context) (liq.Status, error) {
 	return liq.Status{TrackID: f.trackID, Queued: len(f.queue), Current: liq.Track{Filename: f.current, Artist: "liq-artist", Title: "liq-title"}}, nil
 }
 
-func (f *fakeLiq) Push(_ context.Context, path string) (int, error) {
+func (f *fakeLiq) Push(_ context.Context, path string, meta map[string]string) (int, error) {
 	if f.missing[path] {
 		return 0, &liq.Error{Path: "/control/push", Code: 404, Msg: "no such file"}
 	}
 	f.pushes = append(f.pushes, path)
+	f.metas = append(f.metas, meta)
 	f.queue = append(f.queue, path)
 	return len(f.queue), nil
 }
 
 func (f *fakeLiq) Flush(context.Context) error { f.queue = nil; f.flushes++; return nil }
+
+func (f *fakeLiq) Skip(context.Context) error { f.skips++; f.advance(); return nil }
 
 // advance ends the current track: the next queued one starts, or a fallback.
 func (f *fakeLiq) advance() {
@@ -314,5 +319,99 @@ func TestLiquidsoapDownIsSurvived(t *testing.T) {
 	h.step()
 	if len(h.lq.queue) != 2 {
 		t.Fatalf("queue %v", h.lq.queue)
+	}
+}
+
+// The crossfade length Liquidsoap reads comes from the track that is ending, so each
+// push carries the fade of the hop that follows it. The route cosine is 0.6: mid.
+func TestPushCarriesFadeOfFollowingHop(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	if len(h.lq.metas) != 2 {
+		t.Fatalf("metas %v", h.lq.metas)
+	}
+	for i, m := range h.lq.metas {
+		if m["liq_cross_duration"] != "5.00" {
+			t.Errorf("push %d meta %v", i, m)
+		}
+	}
+}
+
+func playOutcomes(t *testing.T, st *state.DB) map[string]string {
+	t.Helper()
+	plays, err := st.History(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, p := range plays {
+		out[p.Path] = p.Outcome
+	}
+	return out
+}
+
+func TestSkipRecordsSkippedNotFinished(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step() // pushes dest001, t001
+	h.lq.advance()
+	h.step() // dest001 plays
+	if err := h.d.Skip(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.step() // t001 starts
+	out := playOutcomes(t, h.st)
+	if out["/m/dest001.mp3"] != state.Skipped {
+		t.Fatalf("outcomes %v", out)
+	}
+	if h.lq.skips != 1 {
+		t.Fatalf("skips %d", h.lq.skips)
+	}
+	now := h.d.Now()
+	if now.Playing == nil || now.Playing.Path != "/m/t001.mp3" {
+		t.Fatalf("now %+v", now.Playing)
+	}
+}
+
+func TestPauseStopsPushingResumePushesAgain(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	h.lq.advance()
+	h.step()
+	if err := h.d.Pause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pushed := len(h.lq.pushes)
+	for i := 0; i < 3; i++ {
+		h.step()
+	}
+	if len(h.lq.pushes) != pushed || len(h.lq.queue) != 0 {
+		t.Fatalf("pushed while paused: %v", h.lq.pushes[pushed:])
+	}
+	if !h.d.Now().Paused {
+		t.Fatal("not paused")
+	}
+	h.d.Resume()
+	h.step()
+	if len(h.lq.queue) == 0 {
+		t.Fatal("nothing pushed after resume")
+	}
+}
+
+func TestSteerReplacesTailAndNeverTouchesPushed(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.step()
+	pushed := append([]string(nil), h.lq.queue...)
+	res, err := h.d.Steer(ctx, plan.Track{Path: "/m/target.mp3", Artist: "T"})
+	if err != nil || !res.Found {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	for _, it := range h.d.Queue() {
+		if it.State == plan.Pushed && it.Path != pushed[0] && it.Path != pushed[1] {
+			t.Fatalf("pushed set changed: %+v", it)
+		}
+	}
+	last := h.d.Queue()
+	if last[len(last)-1].Path != "/m/target.mp3" {
+		t.Fatalf("tail %v", last)
 	}
 }

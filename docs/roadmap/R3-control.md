@@ -26,13 +26,25 @@ heard within one track.
 
 ## Tasks
 
-- [ ] Socket API in `run`; client commands above.
-- [ ] Replan logic in `internal/plan` with tests (steer mid-leg, steer while neighbeats is down,
-      `found: false` on a steer → say so, keep the old plan).
-- [ ] Liquidsoap metadata: set `title`/`artist` on the stream (ICY) so the player shows them.
+- [x] Socket API in `run` (`internal/control`); client commands `now`, `queue`, `history`,
+      `skip`, `steer`, `pause`, `resume`.
+- [x] Replan logic: `Planner.SteerNow` (routes from the last pushed track, replaces the planned
+      tail only; no route or neighbeats down → old plan kept), tested.
+- [x] Skip is recorded as `skipped` (feeds R5).
+- [ ] `theme`, `mode`, `more`, `ban artist`: not built yet.
+- [ ] Liquidsoap metadata: check the player shows artist/title from the stream (harbor sends
+      track tags; files without tags show nothing).
 - [ ] Optional: a ntfy/Gotify notification with now-playing, for the phone without a terminal.
 
 ## Exit criteria
 
 - Roadmap success test 3.
 - Every command answers in under a second while a leg is being planned.
+
+## Status notes
+
+- `steer` resolves words with neighbeats `/v1/search`; several matches are listed and `steer -path`
+  picks one. Reads (`now`, `queue`, `history`) never wait for a leg being planned: the director
+  releases its lock while it talks to neighbeats.
+- `pause` flushes the queue and skips the playing track, so the station falls to `./fallback`.
+- Unit tested only (fake Liquidsoap, neighbeats and socket); not yet run on the stack.

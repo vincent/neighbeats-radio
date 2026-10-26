@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/vincent/neighbeats-radio/internal/config"
+	"github.com/vincent/neighbeats-radio/internal/control"
 	"github.com/vincent/neighbeats-radio/internal/director"
 	"github.com/vincent/neighbeats-radio/internal/liq"
 	"github.com/vincent/neighbeats-radio/internal/neighbeats"
@@ -25,12 +26,17 @@ var version = "dev"
 const usage = `usage: neighbeats-radio [-config FILE] <command>
 
 commands:
-  run          run the director (long-running)
-  queue        print the planned queue
-  push PATH    push a file into Liquidsoap's music queue
-  skip         skip the current track
-  status       print what Liquidsoap is playing
-  version      print the version
+  run               run the director (long-running)
+  now               what is playing, time left, the next three
+  queue             the planned queue
+  history [-n 30]   recent plays with outcome and reason
+  skip              skip the current track (recorded as a skip)
+  steer TEXT        head for a track found by words (or: steer -path PATH)
+  pause | resume    play the fallback instead of the plan, and back
+  push PATH         push a file into Liquidsoap's music queue (debug)
+  liq-skip          skip in Liquidsoap directly, the director is not told (debug)
+  status            print what Liquidsoap is playing (debug)
+  version           print the version
 
 -config defaults to $NEIGHBEATS_RADIO_CONFIG; without either, defaults apply.
 `
@@ -74,19 +80,19 @@ func run(ctx context.Context, args []string) error {
 	switch cmd {
 	case "run":
 		return runDirector(ctx, cfg, lq)
-	case "queue":
-		return printQueue(ctx, cfg)
+	case "now", "queue", "history", "skip", "steer", "pause", "resume":
+		return remote(ctx, cfg, cmd, rest)
 	case "push":
 		if len(rest) != 1 {
 			return fmt.Errorf("push: want exactly one PATH")
 		}
-		n, err := lq.Push(ctx, rest[0])
+		n, err := lq.Push(ctx, rest[0], nil)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("pushed, %d queued\n", n)
 		return nil
-	case "skip":
+	case "liq-skip":
 		return lq.Skip(ctx)
 	case "status":
 		s, err := lq.Status(ctx)
@@ -126,8 +132,17 @@ func runDirector(ctx context.Context, cfg config.Config, lq *liq.Client) error {
 
 	dir := director.New(director.Config{
 		PollInterval: d.PollInterval, PushWhenBelow: d.PushWhenBelow, RepeatWindow: d.RepeatWindow,
+		Fades: plan.Fades{Close: d.Fades.Close, Mid: d.Fades.Mid, Far: d.Fades.Far, CloseAt: d.Fades.CloseAt, FarAt: d.Fades.FarAt},
 	}, lq, pl, db, log)
 	log.Info("director started", "version", version, "liquidsoap", cfg.Liquidsoap.ControlURL, "neighbeats", cfg.Neighbeats.Socket)
+
+	// The command socket is a convenience: if it cannot start, the station still runs.
+	srv := &control.Server{B: dir, R: director.NeighbeatsResolver{Client: nb}}
+	go func() {
+		if err := srv.Serve(ctx, cfg.Control.Socket); err != nil {
+			log.Error("control socket", "err", err)
+		}
+	}()
 	return dir.Run(ctx)
 }
 

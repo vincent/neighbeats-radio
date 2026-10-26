@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func TestPushSendsRawPath(t *testing.T) {
 		io.WriteString(w, `{"pushed":"x","queued":2}`)
 	}))
 	defer srv.Close()
-	n, err := New(srv.URL, time.Second).Push(context.Background(), path)
+	n, err := New(srv.URL, time.Second).Push(context.Background(), path, nil)
 	if err != nil || n != 2 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -78,7 +79,7 @@ func TestErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := New(srv.URL, time.Second)
-	if _, err := c.Push(context.Background(), "/x"); err == nil || !strings.Contains(err.Error(), "no such file") {
+	if _, err := c.Push(context.Background(), "/x", nil); err == nil || !strings.Contains(err.Error(), "no such file") {
 		t.Fatalf("got %v", err)
 	}
 	if _, err := c.Status(context.Background()); err == nil || !strings.Contains(err.Error(), "500") {
@@ -87,5 +88,21 @@ func TestErrors(t *testing.T) {
 	srv.Close()
 	if err := c.Skip(context.Background()); err == nil {
 		t.Fatal("want connection error")
+	}
+}
+
+func TestPushSendsMetadataAsQuery(t *testing.T) {
+	var query url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Query()
+		io.WriteString(w, `{"pushed":"x","queued":1}`)
+	}))
+	defer srv.Close()
+	_, err := New(srv.URL, time.Second).Push(context.Background(), "/m/a.mp3", map[string]string{"liq_cross_duration": "6.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query.Get("liq_cross_duration") != "6.5" {
+		t.Fatalf("query %v", query)
 	}
 }

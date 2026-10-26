@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"sync"
 	"time"
 )
 
@@ -72,7 +73,12 @@ type Config struct {
 	MaxAttempts int
 }
 
+// Planner is safe for concurrent use: the director's poll and the control socket
+// both call it. Routing calls run without the lock; epoch changes whenever the
+// plan is rewritten under them, and a leg planned against an older epoch is dropped.
 type Planner struct {
+	mu     sync.Mutex
+	epoch  int
 	cfg    Config
 	router Router
 	picker Picker
@@ -102,6 +108,8 @@ func New(cfg Config, r Router, p Picker, log *slog.Logger, rnd func(n int) int) 
 // Restore loads a saved queue (a restart resumes the same leg). Items that were
 // pushed are planned again: Liquidsoap keeps no state that matters.
 func (p *Planner) Restore(items []Item) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.items = nil
 	for _, it := range items {
 		switch it.State {
@@ -118,17 +126,35 @@ func (p *Planner) Restore(items []Item) {
 }
 
 // NotePlayed seeds the repeat filter from stored history.
-func (p *Planner) NotePlayed(path string, at time.Time) { p.recent[path] = at }
+func (p *Planner) NotePlayed(path string, at time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recent[path] = at
+}
 
 // Items returns a copy of the queue, oldest first.
-func (p *Planner) Items() []Item { return append([]Item(nil), p.items...) }
+func (p *Planner) Items() []Item {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Item(nil), p.items...)
+}
 
 // Steer makes t the next destination, ahead of the picker.
-func (p *Planner) Steer(t Track) { p.steered = &t }
+func (p *Planner) Steer(t Track) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.steered = &t
+}
 
 // Lookahead is the playing time still ahead: everything not yet started, plus the
 // track now playing (counted whole, which errs short on the safe side).
 func (p *Planner) Lookahead() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lookahead()
+}
+
+func (p *Planner) lookahead() time.Duration {
 	var d time.Duration
 	for _, it := range p.items {
 		if it.State == Planned || it.State == Pushed || it.State == Playing {
@@ -137,6 +163,9 @@ func (p *Planner) Lookahead() time.Duration {
 	}
 	return d
 }
+
+// Assumed is the length used for tracks neighbeats reports no duration for.
+func (p *Planner) Assumed() time.Duration { return p.cfg.AssumedTrack }
 
 func (p *Planner) duration(t Track) time.Duration {
 	if t.Duration > 0 {
@@ -163,11 +192,21 @@ func (p *Planner) Fill(ctx context.Context, now time.Time) (int, error) {
 }
 
 func (p *Planner) planLeg(ctx context.Context, now time.Time) (int, error) {
-	exclude := p.exclusions(now)
+	p.mu.Lock()
+	exclude := p.exclusions(now, false)
 	leg := p.nextLeg
 	p.nextLeg++
+	epoch := p.epoch
+	var last *Item
+	if l := p.last(); l != nil {
+		cp := *l
+		last = &cp
+	}
+	p.mu.Unlock()
 
-	last := p.last()
+	// stale reports that the plan was rewritten (a steer) while we were routing.
+	stale := func() bool { return p.epoch != epoch }
+
 	var to Track
 	for attempt := 1; attempt <= p.cfg.MaxAttempts; attempt++ {
 		var err error
@@ -177,6 +216,11 @@ func (p *Planner) planLeg(ctx context.Context, now time.Time) (int, error) {
 		}
 		if last == nil {
 			to.Reason = "start"
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if stale() {
+				return 0, nil
+			}
 			p.items = append(p.items, Item{Track: to, Leg: leg, State: Planned})
 			p.log.Info("leg", "leg", leg, "start", to.Path)
 			return 1, nil
@@ -195,6 +239,11 @@ func (p *Planner) planLeg(ctx context.Context, now time.Time) (int, error) {
 			p.log.Warn("route empty after repeat filter", "leg", leg, "attempt", attempt, "to", to.Path)
 			continue
 		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if stale() {
+			return 0, nil
+		}
 		for _, t := range tracks {
 			p.items = append(p.items, Item{Track: t, Leg: leg, State: Planned})
 		}
@@ -203,20 +252,28 @@ func (p *Planner) planLeg(ctx context.Context, now time.Time) (int, error) {
 	}
 	// Every destination failed: jump to the last one so the station never stalls.
 	to.Reason = "fallback"
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if stale() {
+		return 0, nil
+	}
 	p.items = append(p.items, Item{Track: to, Leg: leg, State: Planned})
 	p.log.Warn("jump", "leg", leg, "to", to.Path, "attempts", p.cfg.MaxAttempts)
 	return 1, nil
 }
 
 func (p *Planner) destination(ctx context.Context, exclude []string) (Track, error) {
+	p.mu.Lock()
 	if p.steered != nil {
 		t := *p.steered
 		p.steered = nil
+		p.mu.Unlock()
 		if t.Reason == "" {
 			t.Reason = "steered"
 		}
 		return t, nil
 	}
+	p.mu.Unlock()
 	t, err := p.picker.Pick(ctx, exclude)
 	if err != nil {
 		return Track{}, fmt.Errorf("plan: pick destination: %w", err)
@@ -243,8 +300,9 @@ func (p *Planner) filter(in []Track, from Track, exclude []string) []Track {
 }
 
 // exclusions lists every path the next leg must not repeat: played inside the
-// window and still in the queue.
-func (p *Planner) exclusions(now time.Time) []string {
+// window and still in the queue. withoutPlanned leaves out items not yet pushed,
+// for a steer that is about to drop them.
+func (p *Planner) exclusions(now time.Time, withoutPlanned bool) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(path string) {
@@ -261,6 +319,9 @@ func (p *Planner) exclusions(now time.Time) []string {
 		add(path)
 	}
 	for _, it := range p.items {
+		if withoutPlanned && it.State == Planned {
+			continue
+		}
 		add(it.Path)
 	}
 	return out
@@ -277,6 +338,8 @@ func (p *Planner) last() *Item {
 
 // TakeForPush marks up to n planned items as pushed, in order, and returns them.
 func (p *Planner) TakeForPush(n int) []Item {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	var out []Item
 	for i := range p.items {
 		if len(out) >= n {
@@ -292,6 +355,8 @@ func (p *Planner) TakeForPush(n int) []Item {
 
 // Pushed counts items handed to Liquidsoap and not yet started.
 func (p *Planner) Pushed() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	n := 0
 	for _, it := range p.items {
 		if it.State == Pushed {
@@ -304,6 +369,8 @@ func (p *Planner) Pushed() int {
 // Requeue turns pushed items back into planned ones, for when Liquidsoap lost its
 // queue (restart, flush).
 func (p *Planner) Requeue() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for i := range p.items {
 		if p.items[i].State == Pushed {
 			p.items[i].State = Planned
@@ -313,6 +380,8 @@ func (p *Planner) Requeue() {
 
 // Unpush puts a pushed item back to planned, for a push that did not reach Liquidsoap.
 func (p *Planner) Unpush(path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for i := range p.items {
 		if p.items[i].State == Pushed && p.items[i].Path == path {
 			p.items[i].State = Planned
@@ -323,6 +392,8 @@ func (p *Planner) Unpush(path string) {
 
 // Reject drops a pushed item Liquidsoap refused for good (file missing).
 func (p *Planner) Reject(path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for i := range p.items {
 		if p.items[i].State == Pushed && p.items[i].Path == path {
 			p.items[i].State = Skipped
@@ -336,6 +407,8 @@ func (p *Planner) Reject(path string) {
 // now playing, or false when the path is not one the planner pushed (a fallback
 // track or an ident).
 func (p *Planner) Started(path string, at time.Time) (Item, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	idx := -1
 	for i, it := range p.items {
 		if it.State == Pushed && it.Path == path {
@@ -371,4 +444,124 @@ func (p *Planner) compact() {
 		}
 	}
 	p.items = keep
+}
+
+// Fades maps the cosine of a hop to the crossfade length used at that seam: a close
+// hop blends long, a distant one gets a short fade and a clean start.
+type Fades struct {
+	Close, Mid, Far time.Duration
+	// CloseAt and FarAt are the cosine bounds: >= CloseAt is close, < FarAt is far.
+	CloseAt, FarAt float64
+}
+
+// DefaultFades are used when the config leaves the fades out.
+var DefaultFades = Fades{Close: 8 * time.Second, Mid: 5 * time.Second, Far: 1500 * time.Millisecond, CloseAt: 0.8, FarAt: 0.5}
+
+// For returns the crossfade length for a hop with the given cosine. A zero cosine
+// means unknown (a start or fallback track) and gets the middle length.
+func (f Fades) For(cosine float64) time.Duration {
+	switch {
+	case cosine == 0:
+		return f.Mid
+	case cosine >= f.CloseAt:
+		return f.Close
+	case cosine < f.FarAt:
+		return f.Far
+	}
+	return f.Mid
+}
+
+// After returns the item planned right after the one with this path, if any.
+// Liquidsoap reads a crossfade length from the track that is ending, so the
+// director sets it when pushing a track, from the hop that follows it.
+func (p *Planner) After(path string) (Item, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, it := range p.items {
+		if it.Path == path && i+1 < len(p.items) {
+			return p.items[i+1], true
+		}
+	}
+	return Item{}, false
+}
+
+// SteerResult is the outcome of SteerNow. Found=false leaves the plan untouched.
+type SteerResult struct {
+	Found  bool
+	Why    string
+	Tracks int
+}
+
+// SteerNow reroutes the station to dest. It routes from the last track already
+// pushed to Liquidsoap (or the one playing), then replaces everything planned after
+// it, so the change is heard within one track. If neighbeats finds no route, or is
+// down, the old plan stays.
+func (p *Planner) SteerNow(ctx context.Context, dest Track, now time.Time) (SteerResult, error) {
+	p.mu.Lock()
+	var anchor *Item
+	for i := len(p.items) - 1; i >= 0; i-- {
+		if st := p.items[i].State; st == Pushed || st == Playing {
+			cp := p.items[i]
+			anchor = &cp
+			break
+		}
+	}
+	exclude := p.exclusions(now, true)
+	p.mu.Unlock()
+
+	dest.Reason = "steered"
+	var tracks []Track
+	if anchor == nil {
+		// Nothing pushed yet: there is no seam to blend, start at the destination.
+		tracks = []Track{dest}
+	} else {
+		length := p.cfg.LegMin + p.rand(p.cfg.LegMax-p.cfg.LegMin+1)
+		r, err := p.router.Route(ctx, anchor.Track, dest, length, exclude)
+		if err != nil {
+			return SteerResult{}, err
+		}
+		if !r.Found {
+			return SteerResult{Why: r.Why}, nil
+		}
+		tracks = p.filter(r.Tracks, anchor.Track, exclude)
+		if len(tracks) == 0 {
+			return SteerResult{Why: "every track on the route was played recently"}, nil
+		}
+		last := &tracks[len(tracks)-1]
+		last.Reason = "steered: " + last.Reason
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	keep := p.items[:0]
+	for _, it := range p.items {
+		if it.State != Planned {
+			keep = append(keep, it)
+		}
+	}
+	p.items = keep
+	leg := p.nextLeg
+	p.nextLeg++
+	for _, t := range tracks {
+		p.items = append(p.items, Item{Track: t, Leg: leg, State: Planned})
+	}
+	p.steered = nil
+	p.epoch++
+	p.log.Info("steered", "leg", leg, "to", dest.Path, "tracks", len(tracks))
+	return SteerResult{Found: true, Tracks: len(tracks)}, nil
+}
+
+// SkipPlaying marks the playing item skipped and returns it.
+func (p *Planner) SkipPlaying() (Item, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.items {
+		if p.items[i].State == Playing {
+			p.items[i].State = Skipped
+			it := p.items[i]
+			p.compact()
+			return it, true
+		}
+	}
+	return Item{}, false
 }

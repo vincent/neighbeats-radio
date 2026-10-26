@@ -245,7 +245,7 @@ func TestPushStartedAndSkips(t *testing.T) {
 		t.Fatalf("head %+v", p.Items()[0])
 	}
 	// repeat filter now knows both.
-	ex := p.exclusions(t0.Add(3 * time.Minute))
+	ex := p.exclusions(t0.Add(3*time.Minute), false)
 	if !strings.Contains(strings.Join(ex, " "), second) {
 		t.Fatalf("exclusions %v", ex)
 	}
@@ -269,5 +269,128 @@ func TestRequeueAndRestore(t *testing.T) {
 	}
 	if q.nextLeg <= saved[len(saved)-1].Leg {
 		t.Fatalf("nextLeg %d", q.nextLeg)
+	}
+}
+
+func TestFadesFor(t *testing.T) {
+	f := DefaultFades
+	for _, c := range []struct {
+		cos  float64
+		want time.Duration
+	}{
+		{0, f.Mid}, {0.95, f.Close}, {0.8, f.Close}, {0.79, f.Mid}, {0.5, f.Mid}, {0.49, f.Far}, {-0.2, f.Far},
+	} {
+		if got := f.For(c.cos); got != c.want {
+			t.Errorf("For(%v) = %v, want %v", c.cos, got, c.want)
+		}
+	}
+}
+
+// planWithPushed returns a planner whose first two items are pushed (the first playing).
+func planWithPushed(t *testing.T, r *fakeRouter) *Planner {
+	t.Helper()
+	p := New(cfg(), r, &fakePicker{paths: []string{"/s", "/d1", "/d2"}}, nil, func(int) int { return 0 })
+	p.Fill(context.Background(), t0)
+	took := p.TakeForPush(2)
+	p.Started(took[0].Path, t0)
+	return p
+}
+
+func TestSteerNowReplacesPlannedTailOnly(t *testing.T) {
+	r := &fakeRouter{}
+	p := planWithPushed(t, r)
+	before := p.Items()
+	var pushed []string
+	for _, it := range before {
+		if it.State == Playing || it.State == Pushed {
+			pushed = append(pushed, it.Path)
+		}
+	}
+	res, err := p.SteerNow(context.Background(), Track{Path: "/target"}, t0)
+	if err != nil || !res.Found {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	after := p.Items()
+	var live, tail []Item
+	for _, it := range after {
+		if it.State == Planned {
+			tail = append(tail, it)
+		} else {
+			live = append(live, it)
+		}
+	}
+	if len(live) != len(pushed) {
+		t.Fatalf("playing/pushed items changed: %s", paths(after))
+	}
+	for i, it := range live {
+		if it.Path != pushed[i] {
+			t.Fatalf("live %d is %s, want %s", i, it.Path, pushed[i])
+		}
+	}
+	if len(tail) == 0 || tail[len(tail)-1].Path != "/target" || !strings.HasPrefix(tail[len(tail)-1].Reason, "steered") {
+		t.Fatalf("tail %+v", tail)
+	}
+	if !strings.HasSuffix(r.calls[len(r.calls)-1], "->/target") || !strings.HasPrefix(r.calls[len(r.calls)-1], pushed[len(pushed)-1]) {
+		t.Fatalf("routed %v, want from last pushed %s", r.calls, pushed[len(pushed)-1])
+	}
+}
+
+func TestSteerNowNotFoundKeepsPlan(t *testing.T) {
+	r := &fakeRouter{notFound: map[string]bool{"/target": true}}
+	p := planWithPushed(t, r)
+	before := paths(p.Items())
+	res, err := p.SteerNow(context.Background(), Track{Path: "/target"}, t0)
+	if err != nil || res.Found || res.Why == "" {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	if got := paths(p.Items()); got != before {
+		t.Fatalf("plan changed:\n%s\n%s", before, got)
+	}
+}
+
+func TestSteerNowNeighbeatsDownKeepsPlan(t *testing.T) {
+	r := &fakeRouter{}
+	p := planWithPushed(t, r)
+	before := paths(p.Items())
+	r.err = errors.New("socket down")
+	if _, err := p.SteerNow(context.Background(), Track{Path: "/target"}, t0); err == nil {
+		t.Fatal("want error")
+	}
+	if got := paths(p.Items()); got != before {
+		t.Fatalf("plan changed:\n%s\n%s", before, got)
+	}
+}
+
+func TestSteerNowWithNothingPushedStartsAtTarget(t *testing.T) {
+	p := New(cfg(), &fakeRouter{}, &fakePicker{paths: []string{"/s"}}, nil, nil)
+	p.Fill(context.Background(), t0)
+	res, err := p.SteerNow(context.Background(), Track{Path: "/target"}, t0)
+	if err != nil || !res.Found {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	if got := paths(p.Items()); got != "/target" {
+		t.Fatalf("items %s", got)
+	}
+}
+
+func TestSkipPlaying(t *testing.T) {
+	p := planWithPushed(t, &fakeRouter{})
+	playing := ""
+	for _, it := range p.Items() {
+		if it.State == Playing {
+			playing = it.Path
+		}
+	}
+	it, ok := p.SkipPlaying()
+	if !ok || it.Path != playing {
+		t.Fatalf("%+v %v", it, ok)
+	}
+	for _, i := range p.Items() {
+		if i.State == Playing || i.Path == playing {
+			t.Fatalf("still there: %+v", i)
+		}
+	}
+	if _, ok := p.SkipPlaying(); ok {
+		t.Fatal("nothing playing now")
 	}
 }

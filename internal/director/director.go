@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/vincent/neighbeats-radio/internal/liq"
@@ -17,14 +19,16 @@ import (
 // Liquidsoap is the part of internal/liq the director uses.
 type Liquidsoap interface {
 	Status(ctx context.Context) (liq.Status, error)
-	Push(ctx context.Context, path string) (int, error)
+	Push(ctx context.Context, path string, meta map[string]string) (int, error)
 	Flush(ctx context.Context) error
+	Skip(ctx context.Context) error
 }
 
 // Store is the part of internal/state the director uses.
 type Store interface {
 	StartPlay(ctx context.Context, p state.Play) (int64, error)
 	EndPlay(ctx context.Context, id int64, outcome string) error
+	History(ctx context.Context, n int) ([]state.Play, error)
 	ClosePlaying(ctx context.Context) error
 	PlaysSince(ctx context.Context, since time.Time) ([]state.Play, error)
 	SaveQueue(ctx context.Context, items []plan.Item) error
@@ -38,6 +42,8 @@ type Config struct {
 	// RetryAfter is how long to wait after a failed planning attempt (neighbeats
 	// down or reloading) before asking again.
 	RetryAfter time.Duration
+	// Fades picks the crossfade length from the hop cosine. Zero value = plan.DefaultFades.
+	Fades plan.Fades
 }
 
 type Director struct {
@@ -48,14 +54,22 @@ type Director struct {
 	log     *slog.Logger
 	now     func() time.Time
 
+	// mu guards everything below and serialises Step with the control calls.
+	// Step releases it while the planner talks to neighbeats.
+	mu          sync.Mutex
 	started     bool
 	lastTrackID int
 	playID      int64
+	playing     state.Play
 	retryAt     time.Time
 	dirty       bool
+	paused      bool
 }
 
 func New(cfg Config, lq Liquidsoap, p *plan.Planner, st Store, log *slog.Logger) *Director {
+	if cfg.Fades == (plan.Fades{}) {
+		cfg.Fades = plan.DefaultFades
+	}
 	if cfg.RetryAfter == 0 {
 		cfg.RetryAfter = 10 * time.Second
 	}
@@ -103,6 +117,8 @@ func (d *Director) init(ctx context.Context) error {
 
 // Step is one poll: notice a track change, repair a lost queue, plan, push.
 func (d *Director) Step(ctx context.Context) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	st, err := d.lq.Status(ctx)
 	if err != nil {
 		d.log.Warn("liquidsoap unreachable", "err", err)
@@ -135,7 +151,9 @@ func (d *Director) Step(ctx context.Context) {
 		d.trackStarted(ctx, st.Current)
 	}
 
-	if st.Queued < d.planner.Pushed() {
+	// The crossfade takes the next request out of the queue a few seconds before the
+	// track change, so one fewer than pushed is normal; two fewer is a lost queue.
+	if st.Queued+1 < d.planner.Pushed() {
 		d.log.Warn("liquidsoap lost queued tracks", "queued", st.Queued, "pushed", d.planner.Pushed())
 		if err := d.lq.Flush(ctx); err != nil {
 			d.log.Warn("flush", "err", err)
@@ -147,7 +165,9 @@ func (d *Director) Step(ctx context.Context) {
 	}
 
 	d.fill(ctx)
-	d.push(ctx, st.Queued)
+	if !d.paused {
+		d.push(ctx, st.Queued)
+	}
 
 	if d.dirty {
 		if err := d.store.SaveQueue(ctx, d.planner.Items()); err != nil {
@@ -165,6 +185,7 @@ func (d *Director) trackStarted(ctx context.Context, cur liq.Track) {
 			d.log.Error("end play", "err", err)
 		}
 		d.playID = 0
+		d.playing = state.Play{}
 	}
 	it, ours := d.planner.Started(cur.Filename, now)
 	if ours {
@@ -189,13 +210,18 @@ func (d *Director) trackStarted(ctx context.Context, cur liq.Track) {
 		return
 	}
 	d.playID = id
+	d.playing = state.Play{ID: id, StartedAt: now, Path: it.Path, ItemID: it.ItemID, Artist: it.Artist, Title: it.Title,
+		Reason: it.Reason, Cosine: it.Cosine, Leg: it.Leg, Outcome: state.Playing}
 }
 
 func (d *Director) fill(ctx context.Context) {
 	if d.now().Before(d.retryAt) {
 		return
 	}
-	n, err := d.planner.Fill(ctx, d.now())
+	now := d.now()
+	d.mu.Unlock()
+	n, err := d.planner.Fill(ctx, now)
+	d.mu.Lock()
 	if n > 0 {
 		d.dirty = true
 	}
@@ -212,7 +238,7 @@ func (d *Director) push(ctx context.Context, queued int) {
 	}
 	items := d.planner.TakeForPush(want)
 	for i, it := range items {
-		_, err := d.lq.Push(ctx, it.Path)
+		_, err := d.lq.Push(ctx, it.Path, d.fadeMeta(it))
 		var le *liq.Error
 		switch {
 		case err == nil:
@@ -229,4 +255,15 @@ func (d *Director) push(ctx context.Context, queued int) {
 			return
 		}
 	}
+}
+
+// fadeMeta sets the crossfade at the end of it from the hop that follows it. Without
+// a planned successor Liquidsoap keeps its default.
+func (d *Director) fadeMeta(it plan.Item) map[string]string {
+	next, ok := d.planner.After(it.Path)
+	if !ok {
+		return nil
+	}
+	secs := strconv.FormatFloat(d.cfg.Fades.For(next.Cosine).Seconds(), 'f', 2, 64)
+	return map[string]string{"liq_cross_duration": secs, "liq_fade_out": secs, "liq_fade_in": secs}
 }

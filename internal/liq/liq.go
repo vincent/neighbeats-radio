@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -55,12 +56,22 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 	return s, err
 }
 
-// Push queues an absolute path. It returns the queue length after the push.
-func (c *Client) Push(ctx context.Context, path string) (int, error) {
+// Push queues an absolute path. meta becomes request metadata in Liquidsoap (for
+// example liq_cross_duration, read by the crossfade); nil sends the path alone.
+// It returns the queue length after the push.
+func (c *Client) Push(ctx context.Context, path string, meta map[string]string) (int, error) {
 	var out struct {
 		Queued int `json:"queued"`
 	}
-	err := c.do(ctx, http.MethodPost, "/control/push", path, &out)
+	endpoint := "/control/push"
+	if len(meta) > 0 {
+		q := url.Values{}
+		for k, v := range meta {
+			q.Set(k, v)
+		}
+		endpoint += "?" + q.Encode()
+	}
+	err := c.do(ctx, http.MethodPost, endpoint, path, &out)
 	return out.Queued, err
 }
 

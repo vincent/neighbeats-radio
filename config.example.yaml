@@ -21,5 +21,16 @@ director:
   push_when_below: 2     # items Liquidsoap holds
   # Optional fallback destinations when /v1/pick fails or is missing. Paths as Jellyfin sees them.
   seed_paths: []
+  # Crossfade length by hop cosine: >= close_at blends long, < far_at is a short clean fade.
+  fades:
+    close: 8s
+    mid: 5s
+    far: 1500ms
+    close_at: 0.8
+    far_at: 0.5
+
+control:
+  socket: /run/neighbeats-radio/neighbeats-radio.sock   # served by `run`, used by now/skip/steer/...
+  timeout: 10s
 
 data: /data              # holds neighbeats-radio.sqlite
