@@ -35,7 +35,7 @@ destination; when the route is nearly used up, pick a new destination and route 
 
 - [x] `internal/neighbeats`: client for `/v1/health`, `/v1/path`, `/v1/similar` over the Unix
       socket; types copied from `docs/api.md` (no shared module, the API is the contract).
-- [ ] `internal/plan`: the queue model and the leg logic as pure functions over an interface
+- [x] `internal/plan`: the queue model and the leg logic as pure functions over an interface
       (`Route(from, to, n)`, `Pick()`), tested with a fake router: leg chaining, repeat filter,
       look-ahead, behaviour when no route is found (`found: false` → new destination, logged).
 - [ ] `internal/state`: SQLite schema + migrations for `plays` and `queue`.
