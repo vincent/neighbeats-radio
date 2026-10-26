@@ -411,3 +411,13 @@ func TestSameSongOtherPathIsNotRepeated(t *testing.T) {
 		}
 	}
 }
+
+func TestStartedMatchesPlannedItem(t *testing.T) {
+	p := New(cfg(), &fakeRouter{}, &fakePicker{paths: []string{"/s", "/d1", "/d2"}}, nil, func(int) int { return 0 })
+	p.Fill(context.Background(), t0)
+	head := p.Items()[0].Path // planned, never marked pushed: its push reply was lost
+	it, ok := p.Started(head, t0)
+	if !ok || it.State != Playing {
+		t.Fatalf("%+v %v", it, ok)
+	}
+}

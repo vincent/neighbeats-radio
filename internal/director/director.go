@@ -271,9 +271,18 @@ func (d *Director) push(ctx context.Context, queued int) {
 			d.log.Warn("file missing, dropped from the plan", "path", it.Path)
 			d.planner.Reject(it.Path)
 			d.dirty = true
-		default:
-			d.log.Warn("push failed", "path", it.Path, "err", err)
+		case errors.As(err, &le):
+			d.log.Warn("push refused", "path", it.Path, "err", err)
 			for _, rest := range items[i:] {
+				d.planner.Unpush(rest.Path)
+			}
+			return
+		default:
+			// No answer: Liquidsoap may have queued it. Keep it pushed; if it did not
+			// arrive, the lost-queue check in Step repairs it, and nothing is queued twice.
+			d.log.Warn("push unanswered, assuming sent", "path", it.Path, "err", err)
+			d.dirty = true
+			for _, rest := range items[i+1:] {
 				d.planner.Unpush(rest.Path)
 			}
 			return

@@ -457,15 +457,21 @@ func (p *Planner) Reject(path string) {
 
 // Started records that path began playing. The previous track becomes played,
 // pushed items ahead of it in the queue are marked skipped. It returns the item
-// now playing, or false when the path is not one the planner pushed (a fallback
-// track or an ident).
+// now playing, or false when the path is not one the planner holds (a fallback
+// track or an ident). A planned item that plays anyway (its push reply was lost)
+// counts as ours: Liquidsoap has it, whatever the bookkeeping says.
 func (p *Planner) Started(path string, at time.Time) (Item, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	idx := -1
-	for i, it := range p.items {
-		if it.State == Pushed && it.Path == path {
-			idx = i
+	for _, state := range []State{Pushed, Planned} {
+		for i, it := range p.items {
+			if it.State == state && it.Path == path {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
 			break
 		}
 	}

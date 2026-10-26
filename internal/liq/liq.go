@@ -47,7 +47,12 @@ type Client struct {
 }
 
 func New(baseURL string, timeout time.Duration) *Client {
-	return &Client{base: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: timeout}}
+	return &Client{base: strings.TrimRight(baseURL, "/"), http: &http.Client{
+		Timeout: timeout,
+		// Liquidsoap's harbor drops idle connections; a reused one answers with a reset
+		// after the request was already handled. Calls are rare, so connect each time.
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}}
 }
 
 func (c *Client) Status(ctx context.Context) (Status, error) {

@@ -21,17 +21,18 @@ var ctx = context.Background()
 
 // fakeLiq simulates Liquidsoap: a current track, a queue, a track counter.
 type fakeLiq struct {
-	trackID  int
-	current  string
-	queue    []string
-	missing  map[string]bool
-	down     error
-	pushes   []string
-	metas    []map[string]string
-	flushes  int
-	skips    int
-	voices   []string
-	voiceErr error
+	trackID   int
+	current   string
+	queue     []string
+	missing   map[string]bool
+	down      error
+	pushes    []string
+	metas     []map[string]string
+	flushes   int
+	skips     int
+	voices    []string
+	voiceErr  error
+	lostReply bool // a push is queued but its answer is lost
 }
 
 func (f *fakeLiq) Status(context.Context) (liq.Status, error) {
@@ -48,6 +49,9 @@ func (f *fakeLiq) Push(_ context.Context, path string, meta map[string]string) (
 	f.pushes = append(f.pushes, path)
 	f.metas = append(f.metas, meta)
 	f.queue = append(f.queue, path)
+	if f.lostReply {
+		return 0, errors.New("connection reset by peer")
+	}
 	return len(f.queue), nil
 }
 
@@ -607,5 +611,27 @@ func TestFallbackPlayNotedForRepeatFilter(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("exclude %v lacks the fallback track", h.r.lastExclude)
+	}
+}
+
+func TestLostPushReplyIsNotPushedTwiceNorCalledFallback(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	h.lq.lostReply = true
+	h.step()
+	if len(h.lq.pushes) != 1 {
+		t.Fatalf("pushes %v", h.lq.pushes)
+	}
+	h.lq.lostReply = false
+	h.step()
+	for _, p := range h.lq.pushes[1:] {
+		if p == h.lq.pushes[0] {
+			t.Fatalf("pushed twice: %v", h.lq.pushes)
+		}
+	}
+	h.lq.advance() // dest001 starts
+	h.step()
+	hist, _ := h.st.History(ctx, 10)
+	if len(hist) != 1 || hist[0].Reason != "start" {
+		t.Fatalf("history %+v", hist)
 	}
 }
