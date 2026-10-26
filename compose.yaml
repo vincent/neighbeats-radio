@@ -32,10 +32,11 @@ services:
       HOME: /tmp
       XDG_CACHE_HOME: /tmp
     volumes:
-      # Same path as Jellyfin sees (path_map.remote in neighbeats' config): no translation.
+      # Host folder mounted where Jellyfin sees it (MUSIC_PATH), so neighbeats' paths
+      # are playable as they come, no translation.
       - type: bind
-        source: ${MUSIC_PATH:?set MUSIC_PATH to the music folder, as Jellyfin sees it}
-        target: ${MUSIC_PATH}
+        source: ${MUSIC_HOST_PATH:?set MUSIC_HOST_PATH to the music folder on the host}
+        target: ${MUSIC_PATH:?set MUSIC_PATH to the music folder as Jellyfin sees it}
         read_only: true
       - ./fallback:/fallback:ro
     networks:
@@ -146,9 +147,9 @@ configs:
       end)
 
       # POST /control/push   body: an absolute path (raw text, no quoting)
-      harbor.http.register(port=control_port, method="POST", "/control/push", fun (request, response) -> begin
-        path = string.trim(request.body())
-        if path == "" or not string.prefix("/", path) then
+      harbor.http.register(port=control_port, method="POST", "/control/push", fun (req, response) -> begin
+        path = string.trim(req.body())
+        if path == "" or string.sub(path, start=0, length=1) != "/" then
           reply_error(response, 400, "body must be an absolute path")
         elsif not file.exists(path) then
           reply_error(response, 404, "no such file: #{path}")
