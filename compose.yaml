@@ -47,7 +47,7 @@ services:
 
   neighbeats-radio:
     build: .
-    image: neighbeats-radio:local
+    image: ghcr.io/vincent/neighbeats-radio:main
     restart: unless-stopped
     depends_on:
       - liquidsoap
