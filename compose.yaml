@@ -154,7 +154,7 @@ configs:
       # Spoken breaks rendered by the director into /spool/voice. Music drops to about a
       # quarter of its level (-12 dB) while a break plays, and comes back smoothly.
       voice = request.queue(id="voice")
-      mixed = smooth_add(delay=0.5, p=0.25, normal=on_air, special=voice)
+      mixed = smooth_add(duration=0.5, p=0.25, normal=on_air, special=voice)
 
       # Safety net against clipping from tracks of very different level.
       radio = limit(mixed)
@@ -185,28 +185,31 @@ configs:
       # POST /control/push[?liq_cross_duration=6.5&...]   body: an absolute path (raw text, no quoting)
       # Query keys starting with "liq_" become request metadata (crossfade length, fades).
       harbor.http.register(port=control_port, method="POST", "/control/push", fun (req, response) -> begin
-        path = string.trim(req.body())
-        if path == "" or string.sub(path, start=0, length=1) != "/" then
+        file_path = string.trim(req.body())
+        if file_path == "" or string.sub(file_path, start=0, length=1) != "/" then
           reply_error(response, 400, "body must be an absolute path")
-        elsif not file.exists(path) then
-          reply_error(response, 404, "no such file: #{path}")
+        elsif not file.exists(file_path) then
+          reply_error(response, 404, "no such file: #{file_path}")
         else
           meta = list.filter(fun (kv) -> string.sub(fst(kv), start=0, length=4) == "liq_", req.query)
-          music.push(request.create(metadata=meta, path))
-          response.json({pushed = path, queued = list.length(music.queue())})
+          pairs = list.map(fun (kv) -> "#{fst(kv)}=\"#{string.escape(snd(kv))}\"", meta)
+          joined = string.concat(separator=",", pairs)
+          uri = if pairs == [] then file_path else "annotate:#{joined}:#{file_path}" end
+          music.push(request.create(uri))
+          response.json({pushed = file_path, queued = list.length(music.queue())})
         end
       end)
 
       # POST /control/voice   body: an absolute path to a WAV; it plays over the music at once.
       harbor.http.register(port=control_port, method="POST", "/control/voice", fun (req, response) -> begin
-        path = string.trim(req.body())
-        if path == "" or string.sub(path, start=0, length=1) != "/" then
+        file_path = string.trim(req.body())
+        if file_path == "" or string.sub(file_path, start=0, length=1) != "/" then
           reply_error(response, 400, "body must be an absolute path")
-        elsif not file.exists(path) then
-          reply_error(response, 404, "no such file: #{path}")
+        elsif not file.exists(file_path) then
+          reply_error(response, 404, "no such file: #{file_path}")
         else
-          voice.push(request.create(path))
-          response.json({pushed = path})
+          voice.push(request.create(file_path))
+          response.json({pushed = file_path})
         end
       end)
 

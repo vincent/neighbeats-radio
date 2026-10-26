@@ -32,7 +32,8 @@ type Renderer struct {
 	// KeepFor is how long a rendered file stays before the next Render deletes it.
 	KeepFor time.Duration
 
-	run func(ctx context.Context, stdin string, name string, args ...string) error
+	// run returns the tail of stderr along with any error.
+	run func(ctx context.Context, stdin string, name string, args ...string) (string, error)
 }
 
 // Render returns the path of a WAV saying text.
@@ -61,11 +62,12 @@ func (r *Renderer) Render(ctx context.Context, text string) (string, error) {
 	}
 	tmp := path + ".part"
 	defer os.Remove(tmp)
-	if err := run(ctx, text, r.Piper, "--model", r.Model, "--output_file", tmp); err != nil {
+	stderr, err := run(ctx, text, r.Piper, "--model", r.Model, "--output_file", tmp)
+	if err != nil {
 		return "", fmt.Errorf("speak: %w", err)
 	}
 	if fi, err := os.Stat(tmp); err != nil || fi.Size() == 0 {
-		return "", errors.New("speak: piper wrote no audio")
+		return "", fmt.Errorf("speak: piper wrote no audio: %s", stderr)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return "", fmt.Errorf("speak: %w", err)
@@ -87,19 +89,20 @@ func (r *Renderer) prune() {
 	}
 }
 
-func runCommand(ctx context.Context, stdin, name string, args ...string) error {
+func runCommand(ctx context.Context, stdin, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if len(msg) > 200 {
-			msg = msg[len(msg)-200:]
-		}
-		return fmt.Errorf("%s: %w: %s", name, err, msg)
+	err := cmd.Run()
+	msg := strings.TrimSpace(stderr.String())
+	if len(msg) > 200 {
+		msg = msg[len(msg)-200:]
 	}
-	return nil
+	if err != nil {
+		return msg, fmt.Errorf("%s: %w: %s", name, err, msg)
+	}
+	return msg, nil
 }
 
 // Moments a break can be about.

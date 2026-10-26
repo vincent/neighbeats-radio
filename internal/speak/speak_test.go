@@ -11,13 +11,13 @@ import (
 	"time"
 )
 
-func stub(writes string, err error, calls *int) func(context.Context, string, string, ...string) error {
-	return func(_ context.Context, stdin, _ string, args ...string) error {
+func stub(writes string, err error, calls *int) func(context.Context, string, string, ...string) (string, error) {
+	return func(_ context.Context, stdin, _ string, args ...string) (string, error) {
 		*calls++
 		if err != nil {
-			return err
+			return "", err
 		}
-		return os.WriteFile(args[len(args)-1], []byte(writes+stdin), 0o644)
+		return "", os.WriteFile(args[len(args)-1], []byte(writes+stdin), 0o644)
 	}
 }
 
@@ -45,9 +45,9 @@ func TestRenderFailuresReturnErrors(t *testing.T) {
 	if _, err := r.Render(context.Background(), "hi"); err == nil {
 		t.Fatal("want error when piper fails")
 	}
-	r.run = func(_ context.Context, _, _ string, args ...string) error { return nil } // wrote nothing
-	if _, err := r.Render(context.Background(), "hi"); err == nil {
-		t.Fatal("want error when no audio is written")
+	r.run = func(_ context.Context, _, _ string, args ...string) (string, error) { return "bad phonemes", nil } // wrote nothing
+	if _, err := r.Render(context.Background(), "hi"); err == nil || !strings.Contains(err.Error(), "bad phonemes") {
+		t.Fatalf("want error with piper stderr when no audio is written, got %v", err)
 	}
 	if _, err := r.Render(context.Background(), "  "); err == nil {
 		t.Fatal("want error on empty text")
@@ -58,9 +58,9 @@ func TestRenderFailuresReturnErrors(t *testing.T) {
 }
 
 func TestRenderTimeout(t *testing.T) {
-	r := &Renderer{Dir: t.TempDir(), Timeout: 20 * time.Millisecond, run: func(ctx context.Context, _, _ string, _ ...string) error {
+	r := &Renderer{Dir: t.TempDir(), Timeout: 20 * time.Millisecond, run: func(ctx context.Context, _, _ string, _ ...string) (string, error) {
 		<-ctx.Done()
-		return ctx.Err()
+		return "", ctx.Err()
 	}}
 	start := time.Now()
 	if _, err := r.Render(context.Background(), "slow"); err == nil || time.Since(start) > time.Second {
