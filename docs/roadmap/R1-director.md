@@ -38,7 +38,7 @@ destination; when the route is nearly used up, pick a new destination and route 
 - [x] `internal/plan`: the queue model and the leg logic as pure functions over an interface
       (`Route(from, to, n)`, `Pick()`), tested with a fake router: leg chaining, repeat filter,
       look-ahead, behaviour when no route is found (`found: false` → new destination, logged).
-- [ ] `internal/state`: SQLite schema + migrations for `plays` and `queue`.
+- [x] `internal/state`: SQLite schema + migrations for `plays` and `queue`.
 - [ ] Director loop: poll `/control/status` every 2 s; push when low; plan a leg when look-ahead
       drops below the threshold. Detect track change from Liquidsoap metadata (on_track) and
       mark `playing` / `played`.
