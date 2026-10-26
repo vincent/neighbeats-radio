@@ -33,7 +33,9 @@ heard within one track.
 - [x] Skip is recorded as `skipped` (feeds R5).
 - [ ] `theme`, `mode`, `more`, `ban artist`: not built yet.
 - [ ] Liquidsoap metadata: check the player shows artist/title from the stream (harbor sends
-      track tags; files without tags show nothing).
+      track tags; files without tags show nothing). ICY is on (`icy-metaint: 8192`), but a
+      listener joining mid-track got no title: the script now re-sends the current one every
+      10 s. Untested; VLC showed nothing even when a title was sent, so check it again.
 - [ ] Optional: a ntfy/Gotify notification with now-playing, for the phone without a terminal.
 
 ## Exit criteria

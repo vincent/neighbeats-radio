@@ -159,6 +159,18 @@ configs:
       # Safety net against clipping from tracks of very different level.
       radio = limit(mixed)
 
+      # Metadata only enters the chain at a track start, so a listener who joins later
+      # gets no title. Re-send the current one every 10 s, after the mix so a voice
+      # break cannot drop it.
+      radio = insert_metadata(radio)
+      thread.run(every=10., fun () -> begin
+        artist = list.assoc(default="", "artist", current())
+        title = list.assoc(default="", "title", current())
+        if artist != "" and title != "" then
+          radio.insert_metadata([("artist", artist), ("title", title)])
+        end
+      end)
+
       # --- control API -------------------------------------------------------------
       # Plain HTTP + JSON, so the Go side needs no telnet client.
 
