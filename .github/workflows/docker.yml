@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - Dockerfile
+      - liquidsoap/**
       - .dockerignore
       - go.mod
       - go.sum
@@ -15,12 +16,16 @@ on:
 permissions:
   contents: read
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
-
 jobs:
   image:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - context: .
+            image: ghcr.io/${{ github.repository }}
+          - context: ./liquidsoap
+            image: ghcr.io/${{ github.repository }}-liquidsoap
     permissions:
       contents: read
       packages: write
@@ -34,14 +39,14 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ matrix.image }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
           labels: |
-            org.opencontainers.image.title=neighbeats-radio
+            org.opencontainers.image.title=${{ matrix.image }}
             org.opencontainers.image.licenses=Apache-2.0
 
       # Pull requests only check that the image builds; nothing is pushed.
@@ -54,11 +59,11 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ matrix.context }}
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: VERSION=${{ github.ref_name }}-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.context }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.context }}

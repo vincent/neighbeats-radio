@@ -4,6 +4,8 @@
 #   cp .env.example .env && cp config.example.yaml config.yaml    # then edit both
 #   mkdir -p data spool fallback                                  # fallback: a few known-good tracks
 #   docker compose up -d
+# On a VPS only compose.yaml, .env, config.yaml and those folders are needed: both images
+# (director and liquidsoap, with radio.liq baked in) come from ghcr.
 #
 # Stream: https://USER:PASS@${RADIO_HOST}/live.mp3 (see README for player notes).
 #
@@ -13,8 +15,12 @@
 # containers.
 
 services:
+  # Audio engine: plays tracks queued by the director (falls back to ./fallback),
+  # serves the MP3 stream on :8000 via Traefik (basic auth + TLS). Control port 8005
+  # stays internal-only. Music folder mounted read-only at the same path as Jellyfin.
   liquidsoap:
-    image: savonet/liquidsoap:v2.4.6
+    build: ./liquidsoap
+    image: ghcr.io/vincent/neighbeats-radio-liquidsoap:main
     command: ["/etc/liquidsoap/radio.liq"]
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -25,7 +31,6 @@ services:
       HOME: /tmp
       XDG_CACHE_HOME: /tmp
     volumes:
-      - ./liquidsoap/radio.liq:/etc/liquidsoap/radio.liq:ro
       # Same path as Jellyfin sees (path_map.remote in neighbeats' config): no translation.
       - type: bind
         source: ${MUSIC_PATH:?set MUSIC_PATH to the music folder, as Jellyfin sees it}
@@ -45,6 +50,9 @@ services:
       traefik.http.middlewares.radio-auth.basicauth.users: ${RADIO_BASICAUTH:?set RADIO_BASICAUTH}
       traefik.http.services.radio.loadbalancer.server.port: "8000"
 
+  # Director: polls the queue, picks tracks via the neighbeats API (unix socket in
+  # NEIGHBEATS_RUN) and pushes them to liquidsoap over the internal network.
+  # Keeps state in ./data and staged audio in ./spool.
   neighbeats-radio:
     build: .
     image: ghcr.io/vincent/neighbeats-radio:main
