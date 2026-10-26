@@ -134,6 +134,17 @@ configs:
 
       on_air = fallback(track_sensitive=false, [music_x, safe, ident_loop])
 
+      # Say why the station left the music: logged once per change, with the queue depth.
+      music_ok = ref(true)
+      thread.run(every=1., fun () -> begin
+        ok = music_x.is_ready()
+        if ok != music_ok() then
+          music_ok := ok
+          state = if ok then "ready" else "NOT ready" end
+          log.important("music chain #{state} (queued: #{list.length(music.queue())})")
+        end
+      end)
+
       # --- what is playing ---------------------------------------------------------
       # Counted on the music chain, before the voice is mixed in: a spoken break is not a track.
 

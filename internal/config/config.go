@@ -93,7 +93,7 @@ func Default() Config {
 			RepeatWindow:  8 * time.Hour,
 			PollInterval:  2 * time.Second,
 			AssumedTrack:  4 * time.Minute,
-			PushWhenBelow: 2,
+			PushWhenBelow: 4,
 			Fades:         Fades{Close: 8 * time.Second, Mid: 5 * time.Second, Far: 1500 * time.Millisecond, CloseAt: 0.8, FarAt: 0.5},
 		},
 		Voice: Voice{
