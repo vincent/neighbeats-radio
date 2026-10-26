@@ -23,16 +23,16 @@ Nothing chooses music yet.
 
 ## Tasks
 
-- [~] Repo skeleton (C1 done: go.mod, cmd, internal/config, config.example.yaml, .env.example, Makefile, CI; compose.yaml follows in C2): `go.mod`, `cmd/neighbeats-radio`, `internal/`, `compose.yaml`, `.env.example`,
+- [x] Repo skeleton: `go.mod`, `cmd/neighbeats-radio`, `internal/`, `compose.yaml`, `.env.example`,
       `config.example.yaml` (unknown keys rejected, as in neighbeats), Makefile, CI with `go test -race`.
-- [ ] `compose.yaml`: `liquidsoap` + `neighbeats-radio`; join the network where Traefik lives;
+- [x] `compose.yaml` (validated with `docker compose config`; not started on the NAS): `liquidsoap` + `neighbeats-radio`; join the network where Traefik lives;
       mount neighbeats' `./run` read-write for the socket; `read_only: true` and a user like neighbeats.
-- [ ] `radio.liq` as above, with `ident_loop` = one short generated tone or ident, so the
+- [~] `radio.liq` written (C2), NOT yet run: the Docker daemon here cannot pull `savonet/liquidsoap` (no DNS). Check the 2.4 calls (`music.queue()`, `music.set_queue`, `request.body()`) on first run. As above, with `ident_loop` = one short generated tone or ident, so the
       chain is never empty.
 - [ ] `internal/liq`: Go client for the control endpoints (status, push, skip, flush), with a
       fake HTTP server in tests.
 - [ ] `neighbeats-radio push <path>` and `neighbeats-radio skip`: thin commands over `internal/liq`, to test by hand.
-- [ ] Traefik labels + basic auth; document the stream URL form for players.
+- [~] Traefik labels + basic auth written in `compose.yaml`; document the stream URL form for players.
 - [ ] Check Liquidsoap resolves a path with accents, spaces and `#` in it (push one of each).
 
 ## Exit criteria

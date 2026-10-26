@@ -1,0 +1,72 @@
+# neighbeats-radio on the NAS next to neighbeats.
+#
+# One-time setup:
+#   cp .env.example .env && cp config.example.yaml config.yaml    # then edit both
+#   mkdir -p data spool fallback                                  # fallback: a few known-good tracks
+#   docker compose up -d
+#
+# Stream: https://USER:PASS@${RADIO_HOST}/live.mp3 (see README for player notes).
+#
+# Port 8005 (control) is never published and has no Traefik router. Liquidsoap sits on
+# `internal` (director) and on the Traefik network (stream only); anything else on the
+# Traefik network could still reach 8005, so do not share that network with untrusted
+# containers.
+
+services:
+  liquidsoap:
+    image: savonet/liquidsoap:v2.4.6
+    command: ["/etc/liquidsoap/radio.liq"]
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp
+    volumes:
+      - ./liquidsoap/radio.liq:/etc/liquidsoap/radio.liq:ro
+      # Same path as Jellyfin sees (path_map.remote in neighbeats' config): no translation.
+      - type: bind
+        source: ${MUSIC_PATH:?set MUSIC_PATH to the music folder, as Jellyfin sees it}
+        target: ${MUSIC_PATH}
+        read_only: true
+      - ./fallback:/fallback:ro
+    networks:
+      - internal
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
+      traefik.http.routers.radio.rule: Host(`${RADIO_HOST:?set RADIO_HOST}`)
+      traefik.http.routers.radio.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.http.routers.radio.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      traefik.http.routers.radio.middlewares: radio-auth
+      traefik.http.middlewares.radio-auth.basicauth.users: ${RADIO_BASICAUTH:?set RADIO_BASICAUTH}
+      traefik.http.services.radio.loadbalancer.server.port: "8000"
+
+  neighbeats-radio:
+    build: .
+    image: neighbeats-radio:local
+    restart: unless-stopped
+    depends_on:
+      - liquidsoap
+    command: ["-config", "/config/config.yaml", "run"]
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./data:/data
+      - ./spool:/spool
+      # neighbeats' run folder holds neighbeats.sock (its group must be ours, mode 0660).
+      - ${NEIGHBEATS_RUN:-../neighbeats/run}:/run/neighbeats
+    networks:
+      - internal
+
+networks:
+  internal:
+  traefik:
+    name: ${TRAEFIK_NETWORK:-traefik}
+    external: true
